@@ -57,3 +57,38 @@ export async function fetchMonthlySettlements(tenantId, month, year) {
     .eq('year', year);
   return { data: data || [], error };
 }
+
+/**
+ * The live comp off counter. The profile cached at sign-in goes stale as soon
+ * as HR changes it on Leave Balances or a weekly-off punch credits a day, so
+ * the employee's Leaves page reads it fresh (same as the app).
+ */
+export async function fetchMyCompOffBalance(profileId) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('comp_off_balance')
+    .eq('id', profileId)
+    .maybeSingle();
+  return { balance: data ? Number(data.comp_off_balance || 0) : null, error };
+}
+
+/**
+ * HR adds (positive days) or removes (negative days) comp off for one
+ * employee. Writes profiles.comp_off_balance — the same counter the app reads —
+ * and logs the change with its reason. Returns { balance } = the new balance.
+ */
+export async function hrAdjustCompOff(profileId, days, note = '') {
+  const { data, error } = await supabase.rpc('hr_adjust_comp_off', { p_profile_id: profileId, p_days: days, p_note: note });
+  return { balance: data == null ? null : Number(data), error };
+}
+
+/** HR's comp off changes for one employee, newest first. */
+export async function fetchCompOffAdjustments(profileId) {
+  const { data, error } = await supabase
+    .from('comp_off_adjustments')
+    .select('id, days, balance_after, note, created_at')
+    .eq('profile_id', profileId)
+    .order('created_at', { ascending: false })
+    .limit(100);
+  return { data: data || [], error };
+}

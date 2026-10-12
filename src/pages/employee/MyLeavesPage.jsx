@@ -9,6 +9,7 @@ import { useAuth } from '@/context/AuthContext';
 import { listMyLeaveRequests, requestLeave, checkProbationStatus } from '@/services/leaveService';
 import { fetchMyQuota, SELF_LIMIT } from '@/services/requestQuotaService';
 import { fetchMyLeaveBalances, listLeaveTypes } from '@/services/leaveLedgerService';
+import { fetchMyCompOffBalance } from '@/services/compOffService';
 import { fmt, todayStr, HIGH_SALARY_THRESHOLD, isRaniwalaTenant } from '@/lib/helpers';
 
 // Small pill for a Raniwala dual-approval row's manager/HR sub-status — kept
@@ -63,6 +64,7 @@ export function LeaveContent() {
   const [probation, setProbation] = useState(null);
   const [leaveBalances, setLeaveBalances] = useState([]);
   const [leaveTypes, setLeaveTypes] = useState([]);
+  const [freshCompOff, setFreshCompOff] = useState(null);
   const [filter, setFilter] = useState('Pending');
 
   // Comp-off is normally reserved for high-CTC staff (they don't get paid
@@ -71,6 +73,7 @@ export function LeaveContent() {
   // comp-off just by punching in on their weekly off.
   const raniwala = isRaniwalaTenant(tenant);
   const compOffEligible = raniwala || (profile?.ctc || 0) >= HIGH_SALARY_THRESHOLD;
+  const compOffHave = freshCompOff ?? Number(profile?.comp_off_balance || 0);
 
   useEffect(() => {
     fetchRequests();
@@ -78,6 +81,7 @@ export function LeaveContent() {
     loadProbation();
     loadLeaveBalances();
     loadLeaveTypes();
+    loadCompOff();
   }, [profile]);
 
   const loadLeaveBalances = async () => {
@@ -110,6 +114,12 @@ export function LeaveContent() {
     if (!profile) return;
     const p = await checkProbationStatus(profile.id);
     setProbation(p);
+  };
+
+  const loadCompOff = async () => {
+    if (!profile) return;
+    const { balance } = await fetchMyCompOffBalance(profile.id);
+    if (balance != null) setFreshCompOff(balance);
   };
 
   const fetchRequests = async () => {
@@ -148,7 +158,7 @@ export function LeaveContent() {
 
       if (form.leave_type === 'Comp Off') {
         const want = diffDays(form.start_date, form.end_date);
-        const have = Number(profile?.comp_off_balance || 0);
+        const have = compOffHave;
         if (want > have) {
           setSaving(false);
           return showToast(`You have ${fmtDays(have)} comp off day${have === 1 ? '' : 's'} — this request needs ${want}.`, 'error');
@@ -192,7 +202,7 @@ export function LeaveContent() {
   const approvedCount = requests.filter(r => r.status === 'Approved').length;
   const rejectedCount = requests.filter(r => r.status === 'Rejected').length;
   const earnedBalance = fmtDays(leaveBalances.find((b) => b.leave_type?.name === RANIWALA_LEAVE_TYPE)?.balance);
-  const compOffBalance = fmtDays(profile?.comp_off_balance);
+  const compOffBalance = fmtDays(compOffHave);
   const countByFilter = { Pending: pendingCount, Approved: approvedCount, Rejected: rejectedCount, All: requests.length };
   const usedThisYear = requests
     .filter(r => r.status === 'Approved' && new Date(r.start_date).getFullYear() === new Date().getFullYear())
@@ -238,7 +248,7 @@ export function LeaveContent() {
         </div>
       )}
 
-      {!raniwala && compOffEligible && (profile?.comp_off_balance || 0) > 0 && (
+      {!raniwala && compOffEligible && compOffHave > 0 && (
         <div style={{
           background: 'var(--primary-light, #eff6ff)',
           border: '1px solid var(--primary)',
@@ -247,7 +257,7 @@ export function LeaveContent() {
           display: 'flex', alignItems: 'center', gap: 8,
         }}>
           <i className="fas fa-gift" />
-          You have <strong>{profile.comp_off_balance}</strong> Comp Off{profile.comp_off_balance > 1 ? 's' : ''} available.
+          You have <strong>{fmtDays(compOffHave)}</strong> Comp Off{compOffHave > 1 ? 's' : ''} available.
           Select <em>Comp Off</em> as the leave type to use them.
         </div>
       )}
@@ -410,7 +420,7 @@ export function LeaveContent() {
                   return <option key={lt.id} value={lt.name}>{lt.name}{suffix}</option>;
                 })}
                 {compOffEligible && (
-                  <option value="Comp Off">Comp Off — {fmtDays(profile?.comp_off_balance)} available</option>
+                  <option value="Comp Off">Comp Off — {fmtDays(compOffHave)} available</option>
                 )}
               </>
             )}
@@ -418,7 +428,7 @@ export function LeaveContent() {
           {form.leave_type === 'Comp Off' && (
             <div style={{ marginTop: 6, fontSize: 12, color: 'var(--primary)' }}>
               <i className="fas fa-info-circle" style={{ marginRight: 4 }} />
-              Balance: <strong>{profile?.comp_off_balance || 0}</strong> comp off{(profile?.comp_off_balance || 0) !== 1 ? 's' : ''} available.
+              Balance: <strong>{fmtDays(compOffHave)}</strong> comp off{compOffHave !== 1 ? 's' : ''} available.
             </div>
           )}
         </div>
