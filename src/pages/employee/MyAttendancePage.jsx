@@ -10,7 +10,7 @@ import {
   listMyRegularizeRequests,
 } from '@/services/attendanceService';
 import { listHolidays, getOutlet } from '@/services/tenantService';
-import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel, isTenantWeeklyOff, regularizeMinDate, regularizeWindowLabel } from '@/lib/helpers';
+import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel, isTenantWeeklyOff, regularizeMinDate, regularizeWindowLabel, earlyLateGraceNotice } from '@/lib/helpers';
 import RegularizeExtensionNotice from '@/components/RegularizeExtensionNotice';
 
 const REQ_COLOR = { Approved: 'var(--success)', Rejected: 'var(--danger)', Pending: 'var(--warning)' };
@@ -187,7 +187,9 @@ export function AttendanceContent() {
         )}
         {(rec?.early_late_flag || rec?.early_late_graced) && (
           <div
-            title={rec.early_late_flag ? 'Early Left / Late Arrival (counted)' : 'Early Left / Late Arrival (graced — first this month)'}
+            title={tenant?.early_late_grace_minutes
+              ? (rec.early_late_flag ? 'Late arrival / early out: marked Late (grace already used)' : 'Late arrival / early out: this month\'s grace used')
+              : (rec.early_late_flag ? 'Early Left / Late Arrival (counted)' : 'Early Left / Late Arrival (graced — first this month)')}
             style={{
               position: 'absolute', top: 3, right: 3, width: 7, height: 7, borderRadius: '50%',
               background: rec.early_late_flag ? 'var(--danger)' : 'var(--text-muted)',
@@ -226,6 +228,9 @@ export function AttendanceContent() {
   const selectedReqs = myRequests.filter((r) => r.date === selectedDate);
   const canRequest = selectedDate && selectedDate <= todayStr() && selectedDate >= regularizeMinDate(tenant)
     && !selectedReqs.some((r) => r.status === 'Pending' || r.status === 'Approved');
+  const graceNotice = earlyLateGraceNotice(
+    tenant, myRecords, attMonth === today.getMonth() && attYear === today.getFullYear(),
+  );
   const selectedLabel = selectedDate
     ? new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
     : '';
@@ -251,6 +256,22 @@ export function AttendanceContent() {
           <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--purple)' }}>{summary.leaves}</div><div className="att-s-lbl">Leaves</div></div>
           <div className="att-summary-item"><div className="att-s-val" style={{ color: 'var(--primary)' }}>{fmtDuration(summary.totalHours)}</div><div className="att-s-lbl">Total Hours</div></div>
         </div>
+
+        {graceNotice && (
+          <div
+            role="status"
+            style={{
+              display: 'flex', gap: 10, alignItems: 'flex-start',
+              padding: '12px 14px', borderRadius: 10, marginBottom: 16,
+              border: `1px solid ${graceNotice.used ? 'var(--warning)' : 'var(--border)'}`,
+              borderLeft: `4px solid ${graceNotice.used ? 'var(--warning)' : 'var(--success)'}`,
+              fontSize: 13, lineHeight: 1.5, color: 'var(--text)',
+            }}
+          >
+            <i className={`fas ${graceNotice.used ? 'fa-hourglass-end' : 'fa-hourglass-start'}`} style={{ color: graceNotice.used ? 'var(--warning)' : 'var(--success)', marginTop: 2 }} />
+            <span>{graceNotice.text}</span>
+          </div>
+        )}
 
         <div className="grid-3-1">
 
@@ -306,6 +327,14 @@ export function AttendanceContent() {
                       </span>
                     </div>
                   ))}
+                  {tenant?.early_late_grace_minutes && (selectedRec?.early_late_graced || selectedRec?.early_late_flag) && (
+                    <div style={{ marginTop: 12, fontSize: 12, color: selectedRec.early_late_flag ? 'var(--danger)' : 'var(--warning)' }}>
+                      <i className="fas fa-hourglass-end" style={{ marginRight: 6 }} />
+                      {selectedRec.early_late_flag
+                        ? 'Late arrival / early out after this month\'s grace was used: marked Late.'
+                        : 'This month\'s late arrival / early out grace was used on this day. The next one is marked Late.'}
+                    </div>
+                  )}
                   {selectedRec?.total_hours > 0 && (
                     <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: 10 }}>
                       <i className="fas fa-clock" style={{ marginRight: 6 }} />

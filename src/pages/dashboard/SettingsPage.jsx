@@ -577,7 +577,11 @@ export default function SettingsPage() {
               onChange={(e) => setThresholdForm({ ...thresholdForm, late_arrival_allowance_until: e.target.value })} />
           </div>
         </div>
-        <div className="form-hint">One clock-out before "early departure after" OR one clock-in after "late-arrival allowance until" is forgiven per calendar month; any further instance that month is marked Half Day. Leave either blank to turn that check off for this shift.</div>
+        <div className="form-hint">
+          {tenant?.early_late_grace_minutes
+            ? `Limits of the monthly late arrival / early out grace: arriving more than ${tenant.early_late_grace_minutes} min after shift start (up to "late-arrival allowance until"), or leaving more than ${tenant.early_late_grace_minutes} min before shift end (down to "early departure after"), is graced once a calendar month and marked Late after that. Past these limits the hours rule decides (Half Day).`
+            : 'One clock-out before "early departure after" OR one clock-in after "late-arrival allowance until" is forgiven per calendar month; any further instance that month is marked Half Day. Leave either blank to turn that check off for this shift.'}
+        </div>
       </Modal>
 
       <div className="page-content settings-page">

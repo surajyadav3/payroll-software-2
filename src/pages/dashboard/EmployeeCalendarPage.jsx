@@ -620,9 +620,9 @@ export default function EmployeeCalendarPage() {
                         )}
                         <td style={{ textAlign: 'center' }}>
                           {rec?.early_late_flag ? (
-                            <span className="badge badge-danger" title="Counted — not this month's free breach">Counted</span>
+                            <span className="badge badge-danger" title={tenant?.early_late_grace_minutes ? 'Late arrival / early out after this month\'s grace was used: marked Late' : 'Counted — not this month\'s free breach'}>Counted</span>
                           ) : rec?.early_late_graced ? (
-                            <span className="badge badge-secondary" title="Graced — first breach this month, not counted">Graced</span>
+                            <span className="badge badge-secondary" title={tenant?.early_late_grace_minutes ? 'This month\'s one late arrival / early out grace: not marked Late' : 'Graced — first breach this month, not counted'}>Graced</span>
                           ) : (
                             <span style={{ color: 'var(--text-muted)' }}>—</span>
                           )}

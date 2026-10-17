@@ -281,6 +281,33 @@ export function computeEarlyLateBreach(firstPunch, lastPunch, shiftStart, shiftE
   return isLateArrival || isEarlyDeparture;
 }
 
+/**
+ * Late arrival / early out monthly grace (tenants.early_late_grace_minutes,
+ * scored in the DB by early_late_grace_score, 20261017_3). Replaces the
+ * 90-minute rule above for that tenant: the first late arrival / early out
+ * of the month is graced (early_late_graced), every one after is Late
+ * (early_late_flag). Returns the employee's notice for one month, or null.
+ */
+export function earlyLateGraceNotice(tenant, monthRecords, isCurrentMonth) {
+  const mins = tenant?.early_late_grace_minutes;
+  if (!mins) return null;
+  const fmt = (ds) => new Date(ds + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  const used = monthRecords.find((r) => r.early_late_graced);
+  const counted = monthRecords.filter((r) => r.early_late_flag).map((r) => fmt(r.date));
+  if (!used && !counted.length) {
+    if (!isCurrentMonth) return null;
+    return {
+      used: false,
+      text: `Late arrival / early out grace available: once this month you can arrive more than ${mins} min after your shift starts, or leave more than ${mins} min before it ends, without it being marked Late.`,
+    };
+  }
+  return {
+    used: true,
+    text: `Late arrival / early out grace used${used ? ` on ${fmt(used.date)}` : ''}. Any more late arrival or early out (more than ${mins} min) this month is marked Late.`
+      + (counted.length ? ` Marked Late so far: ${counted.join(', ')}.` : ''),
+  };
+}
+
 // Elapsed seconds worked today, ticking every second even for the still-open
 // punch — diffHours() alone only has minute precision (timeStr drops seconds),
 // so the seconds digit of a live timer would otherwise sit frozen for up to 59s.
