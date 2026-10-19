@@ -294,17 +294,22 @@ export function earlyLateGraceNotice(tenant, monthRecords, isCurrentMonth) {
   const fmt = (ds) => new Date(ds + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
   const used = monthRecords.find((r) => r.early_late_graced);
   const counted = monthRecords.filter((r) => r.early_late_flag).map((r) => fmt(r.date));
+  // 20261019_1: a finished day of this many hours is never Late.
+  const waive = tenant?.late_waived_after_hours
+    ? ` A day you work ${Number(tenant.late_waived_after_hours)} hours or more is never marked Late.`
+    : '';
   if (!used && !counted.length) {
     if (!isCurrentMonth) return null;
     return {
       used: false,
-      text: `Late arrival / early out grace available: once this month you can arrive more than ${mins} min after your shift starts, or leave more than ${mins} min before it ends, without it being marked Late.`,
+      text: `Late arrival / early out grace available: once this month you can arrive more than ${mins} min after your shift starts, or leave more than ${mins} min before it ends, without it being marked Late.${waive}`,
     };
   }
   return {
     used: true,
     text: `Late arrival / early out grace used${used ? ` on ${fmt(used.date)}` : ''}. Any more late arrival or early out (more than ${mins} min) this month is marked Late.`
-      + (counted.length ? ` Marked Late so far: ${counted.join(', ')}.` : ''),
+      + (counted.length ? ` Marked Late so far: ${counted.join(', ')}.` : '')
+      + waive,
   };
 }
 
