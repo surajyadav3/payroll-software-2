@@ -523,9 +523,14 @@ const EMPTY_FORM = {
   compliance_enabled: false,
   pf_enabled: false, pf_number: '', pf_amount: '',
   esic_enabled: false, esic_number: '', esic_amount: '',
-  employee_id: '', outlet_location: '', probation_months: 0, manager_id: '',
+  employee_id: '', outlet_location: '', probation_months: 0, manager_id: '', hod_id: '',
   essl_employee_code: '', overtime_applicable: false, comp_off_eligible: false,
 };
+
+// Label an employee's role in the Reporting Manager / HOD dropdowns.
+const roleLabel = (role) => ({
+  admin: 'HR', management: 'Management', hod: 'HOD', manager: 'Manager',
+}[role] || 'Employee');
 
 function getComplianceStatus(emp) {
   if (!emp.compliance_enabled) return 'na';
@@ -747,7 +752,9 @@ export default function EmployeesPage() {
       if (divisionFilter && !nextDivisions.includes(divisionFilter)) setDivisionFilter('');
       if (deptFilter && !nextFilterDepartments.includes(deptFilter)) setDeptFilter('');
       setShifts(shiftRes.data || []);
-      setManagerOptions((managerRes.data || []).filter((e) => e.role === 'manager' || e.role === 'admin'));
+      // Reporting Manager / HOD can be any active employee, not just those
+      // already holding a manager/HR role.
+      setManagerOptions(managerRes.data || []);
 
       // Build set of profile_ids who are currently clocked in (more ins than outs today)
       const working = new Set();
@@ -802,6 +809,7 @@ export default function EmployeesPage() {
       outlet_location:  emp.outlet_location  || '',
       probation_months: emp.probation_months ?? 0,
       manager_id: emp.manager_id || '',
+      hod_id: emp.hod_id || '',
       essl_employee_code: emp.essl_employee_code || '',
       overtime_applicable: !!emp.overtime_applicable,
       comp_off_eligible: !!emp.comp_off_eligible,
@@ -945,6 +953,7 @@ export default function EmployeesPage() {
       outlet_location:  (form.outlet_location || '').trim(),
       probation_months: parseInt(form.probation_months, 10) || 0,
       manager_id: form.manager_id || null,
+      hod_id: form.hod_id || null,
       essl_employee_code: (form.essl_employee_code || '').trim() || null,
       overtime_applicable: !!form.overtime_applicable,
       comp_off_eligible: !!form.comp_off_eligible,
@@ -1015,8 +1024,10 @@ export default function EmployeesPage() {
             overtime_applicable: profileData.overtime_applicable,
             comp_off_eligible: profileData.comp_off_eligible,
             probation_months: profileData.probation_months,
+            manager_id: profileData.manager_id,
+            hod_id: profileData.hod_id,
           });
-          if (extraErr) showToast('Employee created, but overtime/comp off/probation settings failed to save: ' + extraErr.message, 'warning');
+          if (extraErr) showToast('Employee created, but reporting manager / HOD / overtime / comp off / probation settings failed to save: ' + extraErr.message, 'warning');
         }
         setShowModal(false);
         setTempCreds({
@@ -1737,18 +1748,41 @@ export default function EmployeesPage() {
               </div>
             </div>
           </div>
+          {(() => {
+            // Raniwala: only Managers and HODs can be picked (change an employee's
+            // role to Manager first to make them selectable). The currently saved
+            // pick stays listed so editing never silently drops it.
+            const raniwalaPick = (m, current) => !isRaniwalaTenant(tenant)
+              || ['manager', 'hod'].includes(m.role) || m.id === current;
+            return (
           <div className="form-row">
             <div className="form-group">
               <label className="form-label">Reporting Manager</label>
               <select className="form-select" value={form.manager_id} onChange={(e) => setForm({ ...form, manager_id: e.target.value })}>
                 <option value="">None</option>
-                {managerOptions.filter((m) => !editEmp || m.id !== editEmp.id).map((m) => (
-                  <option key={m.id} value={m.id}>{fullName(m)} ({m.role === 'admin' ? 'HR' : 'Manager'})</option>
+                {managerOptions.filter((m) => (!editEmp || m.id !== editEmp.id) && raniwalaPick(m, form.manager_id)).map((m) => (
+                  <option key={m.id} value={m.id}>{fullName(m)}{m.employee_id ? ` (#${m.employee_id})` : ''} — {roleLabel(m.role)}</option>
                 ))}
               </select>
-              <div className="form-hint">Used for 1:1 meetings, KRAs, PIPs, and review routing under Performance.</div>
+              <div className="form-hint">
+                {isRaniwalaTenant(tenant)
+                  ? 'Lists all Managers and HODs. To add someone here, set their User Role to Manager first.'
+                  : 'Any employee can be set as the reporting manager. Used for approvals, 1:1s, KRAs, PIPs, and review routing.'}
+              </div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">{isRaniwalaTenant(tenant) ? 'Reporting HOD' : 'HOD'}</label>
+              <select className="form-select" value={form.hod_id} onChange={(e) => setForm({ ...form, hod_id: e.target.value })}>
+                <option value="">None</option>
+                {managerOptions.filter((m) => (!editEmp || m.id !== editEmp.id) && m.id !== form.manager_id && raniwalaPick(m, form.hod_id)).map((m) => (
+                  <option key={m.id} value={m.id}>{fullName(m)}{m.employee_id ? ` (#${m.employee_id})` : ''} — {roleLabel(m.role)}</option>
+                ))}
+              </select>
+              <div className="form-hint">Head of department. Optional — leave as None if not applicable. Used as the fallback approver when there is no reporting manager.</div>
             </div>
           </div>
+            );
+          })()}
           {editEmp && outlets.length > 1 && (
             <div className="form-row">
               <div className="form-group">
