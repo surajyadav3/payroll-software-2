@@ -26,6 +26,21 @@ export async function fetchHolidays(tenantId, year, month, outletId) {
   return { data, error: null };
 }
 
+/**
+ * Holidays of every outlet inside a date range — used by Master Report to keep
+ * holidays out of the absentee list. Callers match outlet_id per employee
+ * (NULL outlet_id = applies to all outlets).
+ */
+export async function fetchHolidaysInRange(tenantId, fromDate, toDate) {
+  const { data, error } = await supabase
+    .from('holidays')
+    .select('date, name, outlet_id')
+    .eq('tenant_id', tenantId)
+    .gte('date', fromDate)
+    .lte('date', toDate);
+  return { data: data || [], error };
+}
+
 /** Today's holiday for a tenant (and outlet, if given), if any — used to trigger the post-login celebration overlay. */
 export async function fetchTodayHoliday(tenantId, outletId) {
   if (!tenantId) return { data: null, error: null };

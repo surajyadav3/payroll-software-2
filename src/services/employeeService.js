@@ -182,12 +182,47 @@ export async function listColleagues(tenantId) {
 export async function listActiveEmployees(tenantId) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, first_name, middle_name, last_name, department, designation, division, ctc, role, country, join_date, pf_enabled, pf_number, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, essl_employee_code, outlet_id, outlet_location, is_withheld, withheld_reason, bank_acc, bank_name, ifsc_code, manager_id, comp_off_balance, overtime_applicable, comp_off_eligible')
+    .select('id, first_name, middle_name, last_name, department, designation, division, ctc, role, country, join_date, probation_months, pf_enabled, pf_number, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, essl_employee_code, outlet_id, outlet_location, is_withheld, withheld_reason, bank_acc, bank_name, ifsc_code, manager_id, comp_off_balance, overtime_applicable, comp_off_eligible')
     .eq('tenant_id', tenantId)
     .eq('status', 'Active')
     .in('role', STAFF_ROLES)
     .order('first_name');
   return { data: data || [], error };
+}
+
+/**
+ * The personal / contact / ID / bank fields the Master Report's Employee
+ * Details sheet adds on top of listActiveEmployees, as
+ * `{ [profileId]: { ...profileCols, details, father_name } }`. Fetched only
+ * when that sheet is downloaded, so ordinary page loads stay lean. `details`
+ * is the profile_details row (gender, addresses, emergency contacts …);
+ * father_name comes from employee_payroll_settings, which RLS hides from
+ * HR Support (it simply comes back empty).
+ */
+export async function fetchEmployeeMasterExtras(tenantId) {
+  const [profRes, detRes, setRes] = await Promise.all([
+    supabase
+      .from('profiles')
+      .select('id, email, phone, date_of_birth, pan, aadhar, esic_number, passport_number, hod_id, manager_display_name, hod_display_name, weekly_holiday')
+      .eq('tenant_id', tenantId)
+      .eq('status', 'Active')
+      .in('role', STAFF_ROLES),
+    supabase
+      .from('profile_details')
+      .select('profile_id, date_of_birth, gender, marital_status, blood_group, nationality, personal_email, work_number, residence_number, current_address, permanent_address, emergency_contacts')
+      .eq('tenant_id', tenantId),
+    supabase
+      .from('employee_payroll_settings')
+      .select('profile_id, father_name')
+      .eq('tenant_id', tenantId),
+  ]);
+  if (profRes.error) return { data: {}, error: profRes.error };
+  const details = Object.fromEntries((detRes.data || []).map((d) => [d.profile_id, d]));
+  const fathers = Object.fromEntries((setRes.data || []).map((s) => [s.profile_id, s.father_name]));
+  const data = Object.fromEntries((profRes.data || []).map((p) => [p.id, {
+    ...p, details: details[p.id] || {}, father_name: fathers[p.id] || '',
+  }]));
+  return { data, error: null };
 }
 
 // NOTE: when payload.manager_id changes, this writes profiles.manager_id

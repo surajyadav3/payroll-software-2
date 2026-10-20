@@ -121,6 +121,12 @@ export const getInitials = (firstName, lastName) =>
 export const fullName = (p) =>
   [p?.first_name, p?.middle_name, p?.last_name].filter(Boolean).join(' ');
 
+/** Request-page employee search: true when any field contains the query (blank query matches all). */
+export const matchesSearch = (query, ...fields) => {
+  const q = (query || '').trim().toLowerCase();
+  return !q || fields.some((f) => f != null && String(f).toLowerCase().includes(q));
+};
+
 /**
  * What to show in a credentials modal for a profile-shaped object that was
  * fetched with the `employee_current_passwords(password, updated_at)` embed
@@ -217,10 +223,22 @@ export const regularizeExtension = (tenant) => {
 
 const fmtDayMonth = (s) => new Date(s + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 
-export const regularizeMinDate = (tenant) => {
+/**
+ * tenants.regularize_current_month (20261011_3_regularize_current_month.sql):
+ * any day since the 1st of the current month may be regularized, never fewer
+ * days than the normal N-day window. Mirrored in CrewCore's helpers.ts.
+ */
+const regularizeNormalMinDate = (tenant) => {
   const d = new Date();
   d.setDate(d.getDate() - (regularizeWindowDays(tenant) - 1));
   const normal = dateStr(d);
+  if (!tenant?.regularize_current_month) return normal;
+  const monthStart = todayStr().slice(0, 8) + '01';
+  return monthStart < normal ? monthStart : normal;
+};
+
+export const regularizeMinDate = (tenant) => {
+  const normal = regularizeNormalMinDate(tenant);
   const ext = regularizeExtension(tenant);
   return ext && ext.from < normal ? ext.from : normal;
 };
@@ -228,6 +246,7 @@ export const regularizeMinDate = (tenant) => {
 export const regularizeWindowLabel = (tenant) => {
   const ext = regularizeExtension(tenant);
   if (ext) return `any day from ${fmtDayMonth(ext.from)} to today`;
+  if (tenant?.regularize_current_month) return `any day from ${fmtDayMonth(regularizeNormalMinDate(tenant))} to today`;
   const n = regularizeWindowDays(tenant);
   return n === 1 ? 'today' : n === 2 ? 'today or yesterday' : `today and the previous ${n - 1} days`;
 };
@@ -238,7 +257,8 @@ export const regularizeExtensionNotice = (tenant) => {
   if (!ext) return null;
   const month = new Date(ext.from + 'T00:00:00').toLocaleDateString('en-IN', { month: 'long' });
   const n = regularizeWindowDays(tenant);
-  return `Until ${fmtDayMonth(ext.until)}, you can regularize any day from ${fmtDayMonth(ext.from)} — please submit all your ${month} mispunch / attendance corrections for approval now. After ${fmtDayMonth(ext.until)}, only the last ${n} days can be regularized; older days can no longer be regularized.`;
+  const after = tenant?.regularize_current_month ? 'only days of the current month' : `only the last ${n} days`;
+  return `Until ${fmtDayMonth(ext.until)}, you can regularize any day from ${fmtDayMonth(ext.from)} — please submit all your ${month} mispunch / attendance corrections for approval now. After ${fmtDayMonth(ext.until)}, ${after} can be regularized; older days can no longer be regularized.`;
 };
 
 export const timeStr = (d) =>
@@ -616,15 +636,18 @@ export function calcOtPay(ctc, shiftHours, payableHours) {
 //   2h – 2h59m      -> 2h
 //   3h – 4h59m      -> 3h  (4h is still paid as 3h)
 //   5h or more      -> 8h  (a whole extra shift)
+// On the employee's weekly off (`offDay`, their own outlet's — Delhi is off
+// Monday) there is no shift: every hour worked is extra, so 6h on a Sunday
+// at the Factory pays the 5h+ slab.
 export const RANIWALA_DAY_HOURS = 8.5;
 
-export function raniwalaExtraHours(totalHours) {
+export function raniwalaExtraHours(totalHours, offDay = false) {
   const h = Number(totalHours) || 0;
-  return Math.max(0, h - RANIWALA_DAY_HOURS);
+  return offDay ? Math.max(0, h) : Math.max(0, h - RANIWALA_DAY_HOURS);
 }
 
-export function raniwalaPayableOtHours(totalHours) {
-  const extra = raniwalaExtraHours(totalHours);
+export function raniwalaPayableOtHours(totalHours, offDay = false) {
+  const extra = raniwalaExtraHours(totalHours, offDay);
   if (extra >= 5) return 8;
   if (extra >= 3) return 3;
   if (extra >= 2) return 2;
@@ -639,6 +662,30 @@ export function raniwalaPayableOtHours(totalHours) {
 export function calcRaniwalaOtPay(ctc, daysInMonth, payableHours) {
   if (!ctc || !payableHours || !daysInMonth) return 0;
   return Math.round((ctc / daysInMonth / 8) * payableHours);
+}
+
+/**
+ * Length of a shift in hours from 'HH:MM' start/end (crosses midnight), or
+ * null — same as the DB's shift_length_hours().
+ */
+export function shiftLengthHours(start, end) {
+  const re = /^(\d{1,2}):(\d{2})/;
+  const a = re.exec(start || '');
+  const b = re.exec(end || '');
+  if (!a || !b) return null;
+  const mins = ((Number(b[1]) * 60 + Number(b[2])) - (Number(a[1]) * 60 + Number(a[2])) + 1440) % 1440;
+  return mins ? mins / 60 : null;
+}
+
+/**
+ * The shift an employee's comp off for extra hours is measured against —
+ * their outlet's shift, else the company's, else 8h 30m. Mirrors
+ * trg_comp_off_credit_from_hours (20261012_4).
+ */
+export function compOffShiftHours(outlet, tenant) {
+  return shiftLengthHours(outlet?.shift_start, outlet?.shift_end)
+    ?? shiftLengthHours(tenant?.shift_start, tenant?.shift_end)
+    ?? RANIWALA_DAY_HOURS;
 }
 
 // ── Weekly Off Comp Off helpers ───────────────────────────────────────────────
@@ -674,6 +721,11 @@ export const STAFF_ROLES = ['employee', 'admin', 'manager', 'hod', 'management']
 // — opt-in per tenant by name so other tenants' exports are never affected.
 export const isRaniwalaTenant = (tenant) => /raniwala/i.test(tenant?.company_name || '');
 
+// An HR login without payroll (profiles.hr_support, migration
+// 20261012_1_hr_support_account): the HR portal minus Payroll. RLS also
+// hides every payroll table from it.
+export const isHrSupport = (profile) => profile?.role === 'admin' && profile?.hr_support === true;
+
 // Polishes free-text fields (name, designation, department, division, manager,
 // location) for exported sheets — data entered in all-caps or all-lowercase
 // otherwise looks unprofessional next to properly-cased columns.
@@ -704,6 +756,11 @@ export function getTenantWeeklyOffDays(tenant, outlet = null) {
 export function isTenantWeeklyOff(date, tenant, outlet = null) {
   const offDays = getTenantWeeklyOffDays(tenant, outlet);
   return offDays.includes(date.getDay());
+}
+
+/** True if the 'YYYY-MM-DD' date is the employee's weekly off (outlet ?? tenant). */
+export function isWeeklyOffDate(date, tenant, outlet = null) {
+  return !!date && isTenantWeeklyOff(new Date(`${date}T00:00:00`), tenant, outlet);
 }
 
 /** Returns all calendar dates in a month that fall on the given weekday(s) (0=Sun…6=Sat). */
