@@ -193,7 +193,11 @@ export default function MyTeamPage() {
 
     return (m, d) => {
       const ds = dateStr(d);
-      const holiday = holidays.find((h) => h.date === ds && (!h.outlet_id || h.outlet_id === m.outlet_id));
+      // An outlet with holidays switched off (outlets.holidays_enabled) skips the
+      // company-wide holidays but keeps the ones added for that outlet.
+      const holiday = holidays.find((h) => h.date === ds && (h.outlet_id
+        ? h.outlet_id === m.outlet_id
+        : outletById.get(m.outlet_id)?.holidays_enabled !== false));
       if (holiday) return { kind: 'holiday', title: holiday.name };
       const leave = leaves.find((l) => l.profile_id === m.id && inRange(ds, l.start_date, l.end_date));
       if (leave) return { kind: leave.status === 'Approved' ? 'leave' : 'leave-pending', title: `${leave.leave_type} (${leave.status})` };

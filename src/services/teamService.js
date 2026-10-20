@@ -92,7 +92,7 @@ export async function fetchTeamMonth(tenantId, meId, year, month) {
     supabase.from('wfh_requests').select('profile_id, from_date, to_date').in('profile_id', ids).eq('status', 'Approved')
       .lte('from_date', last).gte('to_date', first),
     supabase.from('holidays').select('date, name, outlet_id').eq('tenant_id', tenantId).gte('date', first).lte('date', last),
-    supabase.from('outlets').select('id, name, weekly_off_days').eq('tenant_id', tenantId),
+    supabase.from('outlets').select('id, name, weekly_off_days, holidays_enabled').eq('tenant_id', tenantId),
   ]);
 
   return {
