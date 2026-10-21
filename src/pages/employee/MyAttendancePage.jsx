@@ -189,7 +189,7 @@ export function AttendanceContent() {
           <div
             title={tenant?.early_late_grace_minutes
               ? (rec.early_late_flag
-                ? `${earlyLateKindLabel(rec.early_late_kind)}: marked Late (grace already used)`
+                ? `${earlyLateKindLabel(rec.early_late_kind)}: marked ${rec.status} (grace already used)`
                 : `${earlyLateKindLabel(rec.early_late_kind)}: this month's grace used`)
               : (rec.early_late_flag ? 'Early Left / Late Arrival (counted)' : 'Early Left / Late Arrival (graced — first this month)')}
             style={{
@@ -333,7 +333,7 @@ export function AttendanceContent() {
                     <div style={{ marginTop: 12, fontSize: 12, color: selectedRec.early_late_flag ? 'var(--danger)' : 'var(--warning)' }}>
                       <i className="fas fa-hourglass-end" style={{ marginRight: 6 }} />
                       {selectedRec.early_late_flag
-                        ? `${earlyLateKindLabel(selectedRec.early_late_kind)} after this month's grace was used: marked Late.`
+                        ? `${earlyLateKindLabel(selectedRec.early_late_kind)} after this month's grace was used: marked ${selectedRec.status}.`
                         : `${earlyLateKindLabel(selectedRec.early_late_kind)}: this month's grace was used on this day, so it is marked Present. The next late arrival or early left is marked Late.`}
                     </div>
                   )}

@@ -336,7 +336,7 @@ export function earlyLateGraceNotice(tenant, monthRecords, isCurrentMonth) {
   }
   return {
     used: true,
-    text: `Late arrival / early left grace used${used ? ` on ${fmt(used.date)} (${earlyLateKindLabel(used.early_late_kind)})` : ''}. Any more late arrival or early left (more than ${mins} min) this month is marked Late.`
+    text: `Late arrival / early left grace used${used ? ` on ${fmt(used.date)} (${earlyLateKindLabel(used.early_late_kind)})` : ''}. Any more late arrival or early left (more than ${mins} min) this month is marked Late, or Half Day if it is past your shift's limit and under 8 hours.`
       + (counted.length ? ` Marked Late so far: ${counted.join(', ')}.` : '')
       + waive,
   };
