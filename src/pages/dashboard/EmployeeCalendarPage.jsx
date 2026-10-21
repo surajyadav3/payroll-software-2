@@ -9,6 +9,7 @@ import { fetchMyMonthAttendance, fetchEmployeeProfileInfo, fetchTeamAttendance, 
 import {
   fmt, fmtTime12, fmtDuration, dateStr, monthLabel, fullName, scopedToOutlet, isTenantWeeklyOff,
   isShortDay, MONTHLY_LATE_HIGHLIGHT_LIMIT, toTitleCase, probationInfo, isRaniwalaTenant, raniwalaPayableOtHours,
+  earlyLateKindLabel,
 } from '@/lib/helpers';
 import ExtraHoursCell from '@/components/ExtraHoursCell';
 
@@ -280,11 +281,15 @@ export default function EmployeeCalendarPage() {
         rec ? (getFirstIn(rec.punches) || '') : '',
         rec ? (getLastOut(rec.punches) || '') : '',
         rec?.total_hours ? fmtDuration(rec.total_hours) : '',
-        rec?.early_late_flag ? 'Counted' : rec?.early_late_graced ? 'Graced' : '',
+        rec?.early_late_flag
+          ? (rec.early_late_kind ? `${earlyLateKindLabel(rec.early_late_kind)} (Late)` : 'Counted')
+          : rec?.early_late_graced
+            ? (rec.early_late_kind ? `${earlyLateKindLabel(rec.early_late_kind)} (Graced)` : 'Graced')
+            : '',
       ]);
     });
     const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols'] = [{ wch: 14 }, { wch: 6 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 10 }];
+    ws['!cols'] = [{ wch: 14 }, { wch: 6 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 32 }];
     ws['!merges'] = [
       { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },
       { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } },
@@ -620,9 +625,13 @@ export default function EmployeeCalendarPage() {
                         )}
                         <td style={{ textAlign: 'center' }}>
                           {rec?.early_late_flag ? (
-                            <span className="badge badge-danger" title={tenant?.early_late_grace_minutes ? 'Late arrival / early out after this month\'s grace was used: marked Late' : 'Counted — not this month\'s free breach'}>Counted</span>
+                            <span className="badge badge-danger" title={tenant?.early_late_grace_minutes ? `${earlyLateKindLabel(rec.early_late_kind)} after this month's grace was used: marked Late` : 'Counted — not this month\'s free breach'}>
+                              {rec.early_late_kind ? earlyLateKindLabel(rec.early_late_kind) : 'Counted'}
+                            </span>
                           ) : rec?.early_late_graced ? (
-                            <span className="badge badge-secondary" title={tenant?.early_late_grace_minutes ? 'This month\'s one late arrival / early out grace: not marked Late' : 'Graced — first breach this month, not counted'}>Graced</span>
+                            <span className="badge badge-secondary" title={tenant?.early_late_grace_minutes ? `${earlyLateKindLabel(rec.early_late_kind)}: this month's one grace, marked Present` : 'Graced — first breach this month, not counted'}>
+                              {rec.early_late_kind ? `${earlyLateKindLabel(rec.early_late_kind)} · Graced` : 'Graced'}
+                            </span>
                           ) : (
                             <span style={{ color: 'var(--text-muted)' }}>—</span>
                           )}

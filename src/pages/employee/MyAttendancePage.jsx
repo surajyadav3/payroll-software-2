@@ -10,7 +10,7 @@ import {
   listMyRegularizeRequests,
 } from '@/services/attendanceService';
 import { listHolidays, getOutlet } from '@/services/tenantService';
-import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel, isTenantWeeklyOff, regularizeMinDate, regularizeWindowLabel, earlyLateGraceNotice } from '@/lib/helpers';
+import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel, isTenantWeeklyOff, regularizeMinDate, regularizeWindowLabel, earlyLateGraceNotice, earlyLateKindLabel } from '@/lib/helpers';
 import RegularizeExtensionNotice from '@/components/RegularizeExtensionNotice';
 
 const REQ_COLOR = { Approved: 'var(--success)', Rejected: 'var(--danger)', Pending: 'var(--warning)' };
@@ -188,7 +188,9 @@ export function AttendanceContent() {
         {(rec?.early_late_flag || rec?.early_late_graced) && (
           <div
             title={tenant?.early_late_grace_minutes
-              ? (rec.early_late_flag ? 'Late arrival / early out: marked Late (grace already used)' : 'Late arrival / early out: this month\'s grace used')
+              ? (rec.early_late_flag
+                ? `${earlyLateKindLabel(rec.early_late_kind)}: marked Late (grace already used)`
+                : `${earlyLateKindLabel(rec.early_late_kind)}: this month's grace used`)
               : (rec.early_late_flag ? 'Early Left / Late Arrival (counted)' : 'Early Left / Late Arrival (graced — first this month)')}
             style={{
               position: 'absolute', top: 3, right: 3, width: 7, height: 7, borderRadius: '50%',
@@ -331,8 +333,8 @@ export function AttendanceContent() {
                     <div style={{ marginTop: 12, fontSize: 12, color: selectedRec.early_late_flag ? 'var(--danger)' : 'var(--warning)' }}>
                       <i className="fas fa-hourglass-end" style={{ marginRight: 6 }} />
                       {selectedRec.early_late_flag
-                        ? 'Late arrival / early out after this month\'s grace was used: marked Late.'
-                        : 'This month\'s late arrival / early out grace was used on this day. The next one is marked Late.'}
+                        ? `${earlyLateKindLabel(selectedRec.early_late_kind)} after this month's grace was used: marked Late.`
+                        : `${earlyLateKindLabel(selectedRec.early_late_kind)}: this month's grace was used on this day, so it is marked Present. The next late arrival or early left is marked Late.`}
                     </div>
                   )}
                   {selectedRec?.total_hours > 0 && (

@@ -308,12 +308,21 @@ export function computeEarlyLateBreach(firstPunch, lastPunch, shiftStart, shiftE
  * of the month is graced (early_late_graced), every one after is Late
  * (early_late_flag). Returns the employee's notice for one month, or null.
  */
+/** attendance.early_late_kind (20261021_1) as shown to people. */
+export function earlyLateKindLabel(kind) {
+  if (kind === 'late_arrival') return 'Late Arrival';
+  if (kind === 'early_left') return 'Early Left';
+  if (kind === 'both') return 'Late Arrival + Early Left';
+  return 'Late Arrival / Early Left';
+}
+
 export function earlyLateGraceNotice(tenant, monthRecords, isCurrentMonth) {
   const mins = tenant?.early_late_grace_minutes;
   if (!mins) return null;
   const fmt = (ds) => new Date(ds + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
   const used = monthRecords.find((r) => r.early_late_graced);
-  const counted = monthRecords.filter((r) => r.early_late_flag).map((r) => fmt(r.date));
+  const counted = monthRecords.filter((r) => r.early_late_flag)
+    .map((r) => `${fmt(r.date)} (${earlyLateKindLabel(r.early_late_kind)})`);
   // 20261019_1: a finished day of this many hours is never Late.
   const waive = tenant?.late_waived_after_hours
     ? ` A day you work ${Number(tenant.late_waived_after_hours)} hours or more is never marked Late.`
@@ -322,12 +331,12 @@ export function earlyLateGraceNotice(tenant, monthRecords, isCurrentMonth) {
     if (!isCurrentMonth) return null;
     return {
       used: false,
-      text: `Late arrival / early out grace available: once this month you can arrive more than ${mins} min after your shift starts, or leave more than ${mins} min before it ends, without it being marked Late.${waive}`,
+      text: `Late arrival / early left grace available: once this month you can arrive more than ${mins} min after your shift starts, or leave more than ${mins} min before it ends, and still be marked Present.${waive}`,
     };
   }
   return {
     used: true,
-    text: `Late arrival / early out grace used${used ? ` on ${fmt(used.date)}` : ''}. Any more late arrival or early out (more than ${mins} min) this month is marked Late.`
+    text: `Late arrival / early left grace used${used ? ` on ${fmt(used.date)} (${earlyLateKindLabel(used.early_late_kind)})` : ''}. Any more late arrival or early left (more than ${mins} min) this month is marked Late.`
       + (counted.length ? ` Marked Late so far: ${counted.join(', ')}.` : '')
       + waive,
   };
