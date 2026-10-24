@@ -308,7 +308,8 @@ export async function fetchTeamAttendance(tenantId, date) {
   const [empsRes, deptsRes, attRes] = await Promise.all([
     supabase.from('profiles').select('*').eq('tenant_id', tenantId).eq('status', 'Active'),
     supabase.from('departments').select('name').eq('tenant_id', tenantId),
-    supabase.from('attendance').select('*, punches(*)').eq('tenant_id', tenantId).eq('date', date),
+    // day_shift: the shift picked from the day's punches (20261024_8).
+    supabase.from('attendance').select('*, punches(*), day_shift:shifts(name, start_time, end_time)').eq('tenant_id', tenantId).eq('date', date),
   ]);
 
   return {

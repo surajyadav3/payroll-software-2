@@ -337,7 +337,9 @@ export default function AttendancePage() {
       // clock-out are stored, on the attendance row itself.
       const inLoc = rec?.punch_in_lat != null && rec?.punch_in_lng != null ? { lat: rec.punch_in_lat, lng: rec.punch_in_lng } : null;
       const outLoc = rec?.punch_out_lat != null && rec?.punch_out_lng != null ? { lat: rec.punch_out_lat, lng: rec.punch_out_lng } : null;
-      return { ...emp, clockInT, clockOutT, hours, rawHours, status, badgeCls, extraPunches, punchTimes, clockInSource, clockOutSource, inLoc, outLoc, outOfGeofence: rec?.out_of_geofence || false, compOffCredit: Number(rec?.comp_off_credit) || 0 };
+      // Shift picked from the day's first punch, for companies on that rule.
+      const dayShift = rec?.day_shift ? `${fmtTime12(rec.day_shift.start_time)} – ${fmtTime12(rec.day_shift.end_time)}` : null;
+      return { ...emp, clockInT, clockOutT, hours, rawHours, status, badgeCls, extraPunches, punchTimes, clockInSource, clockOutSource, inLoc, outLoc, outOfGeofence: rec?.out_of_geofence || false, compOffCredit: Number(rec?.comp_off_credit) || 0, dayShift, dayShiftName: rec?.day_shift?.name || '' };
     });
 
     setTeamData(rows);
@@ -629,6 +631,11 @@ export default function AttendancePage() {
                           )}
                           {isRepeatLate && (
                             <i className="fas fa-exclamation-triangle" style={{ marginLeft: 6, color: 'var(--danger)' }} title={`Late ${lateThisMonth}x this month`} />
+                          )}
+                          {r.dayShift && (
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }} title={`Shift picked from the punch-in time: ${r.dayShiftName}`}>
+                              <i className="fas fa-clock" style={{ marginRight: 4 }} />{r.dayShift}
+                            </div>
                           )}
                         </td>
                         {!raniwala && <td>{monthStat ? fmtDuration(avgHoursThisMonth) : '—'}</td>}

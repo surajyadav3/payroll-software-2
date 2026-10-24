@@ -133,6 +133,52 @@ function AutoClockoutCard({ tenant, onSaved }) {
   );
 }
 
+// Shift from punch-in (tenants.auto_shift_from_punch, 20261024_8): the DB
+// picks each day's shift from the company's list — the one starting nearest
+// the first punch — and judges Late from it. For companies whose staff work
+// many shifts with none assigned (IndWell Hotel).
+function AutoShiftCard({ tenant, onSaved }) {
+  const [saving, setSaving] = useState(false);
+  if (!tenant) return null;
+  const enabled = !!tenant.auto_shift_from_punch;
+
+  const toggle = async () => {
+    setSaving(true);
+    const { error } = await updateTenant(tenant.id, { auto_shift_from_punch: !enabled });
+    setSaving(false);
+    if (error) return showToast('Failed to update: ' + error.message, 'error');
+    showToast(`Shift from punch-in ${!enabled ? 'enabled' : 'disabled'}`, 'success');
+    onSaved();
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card-header"><h3>Shift from Punch-In Time</h3></div>
+      <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          Each day's shift is picked from the company's shift list (Settings &gt; Shifts): the one
+          that starts nearest the employee's first punch — clocking in at 11:00 AM gives the
+          11:00 AM shift, and Late is judged from that start. Where two shifts start at the same
+          time, the one kept for the employee's designation wins, then the one whose end is
+          nearest their clock-out.
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            className="btn btn-outline btn-icon btn-sm"
+            disabled={saving}
+            onClick={toggle}
+            title={enabled ? 'Disable shift from punch-in' : 'Enable shift from punch-in'}
+          >
+            <i className={`fas ${enabled ? 'fa-toggle-on' : 'fa-toggle-off'}`} style={{ color: enabled ? 'var(--success)' : 'var(--text-muted)' }} />
+          </button>
+          <span className={`badge ${enabled ? 'badge-success' : 'badge-secondary'}`}>{enabled ? 'Enabled' : 'Disabled'}</span>
+          {saving && <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Comp-off "gain type" — how an employee earns a Comp Off for working a
 // weekly off day. Off (default) = month-end settlement, reviewed in batch
 // during payroll (compOffService.js / PayrollPage). On = real-time grant the
@@ -306,6 +352,7 @@ export default function ToggleServicesPage() {
                 limitField="special_auto_approval_limit"
               />
               <AutoClockoutCard tenant={currentTenant} onSaved={refreshTenants} />
+              <AutoShiftCard tenant={currentTenant} onSaved={refreshTenants} />
               <CompOffGainTypeCard tenant={currentTenant} onSaved={refreshTenants} />
             </>
           )}

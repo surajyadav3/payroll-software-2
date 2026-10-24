@@ -1079,7 +1079,11 @@ export default function SettingsPage() {
                 <div key={s.id} className="settings-list-row">
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 600 }}>{s.name}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{s.start_time} — {s.end_time}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                      {s.start_time} — {s.end_time}
+                      {tenant?.auto_shift_from_punch && s.for_designations?.length > 0 && ` · only ${s.for_designations.join(', ').toUpperCase()}`}
+                      {tenant?.auto_shift_from_punch && s.auto_pick === false && ' · not picked from punch-in'}
+                    </div>
                   </div>
                   <div style={{ display: 'flex', gap: 4 }}>
                     <button className="btn btn-outline btn-icon btn-sm" title="Auto-attendance thresholds" onClick={() => openThresholds(s)}>
