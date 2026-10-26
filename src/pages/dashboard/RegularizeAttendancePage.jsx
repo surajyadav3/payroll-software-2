@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
+import OutletSelect from '@/components/OutletSelect';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
@@ -151,6 +152,7 @@ export default function RegularizeAttendancePage() {
       />
       <div className="page-content">
         <div className="filter-bar">
+          <OutletSelect />
           {['Pending', 'Approved', 'Rejected', 'All'].map(s => (
             <button
               key={s}

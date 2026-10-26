@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
+import OutletSelect from '@/components/OutletSelect';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
@@ -82,6 +83,7 @@ export default function WFHRequestsPage() {
       />
       <div className="page-content">
         <div className="filter-bar">
+          <OutletSelect />
           {['Pending', 'Approved', 'Rejected', 'All'].map((s) => (
             <button
               key={s}

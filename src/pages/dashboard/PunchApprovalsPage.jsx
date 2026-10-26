@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import Header from '@/components/Header';
+import OutletSelect from '@/components/OutletSelect';
 import { showToast } from '@/components/Toast';
 import { useOutletView } from '@/context/OutletViewContext';
 import { listPunchApprovals, reviewPunches } from '@/services/punchApprovalService';
@@ -76,6 +77,7 @@ export default function PunchApprovalsPage() {
       />
       <div className="page-content">
         <div className="filter-bar">
+          <OutletSelect />
           {STATUS_FILTERS.map((s) => (
             <button
               key={s.key}

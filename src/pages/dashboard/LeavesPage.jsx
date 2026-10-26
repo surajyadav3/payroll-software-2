@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Header from '@/components/Header';
+import OutletSelect from '@/components/OutletSelect';
 import StatCard from '@/components/StatCard';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
@@ -183,6 +184,7 @@ export default function LeavesPage() {
               )}
             </h3>
             <div className="flex gap-1" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
+              <OutletSelect style={{ marginRight: 8 }} />
               {departments.length > 0 && (
                 <select
                   className="form-select"

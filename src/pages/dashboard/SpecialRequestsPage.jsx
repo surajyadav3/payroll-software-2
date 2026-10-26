@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
+import OutletSelect from '@/components/OutletSelect';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
@@ -101,6 +102,7 @@ export default function SpecialRequestsPage() {
             {filtered.length > 0 && <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>({filtered.length})</span>}
           </h3>
           <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
+            <OutletSelect />
             <div className="flex gap-1">
               {['Pending', 'Approved', 'Rejected', 'All'].map(s => (
                 <button
