@@ -579,7 +579,7 @@ export default function SettingsPage() {
         </div>
         <div className="form-hint">
           {tenant?.early_late_grace_minutes
-            ? `Late arrival / early left: arriving more than ${tenant.early_late_grace_minutes} min after shift start, or leaving more than ${tenant.early_late_grace_minutes} min before shift end, is graced once a calendar month (marked Present, however late or early). After that it is marked Late; past these limits (after "late-arrival allowance until" / before "early departure after") it is Half Day when under the full-day hours.`
+            ? `Late arrival / early left: arriving more than ${tenant.early_late_grace_minutes} min after shift start, or leaving more than ${tenant.early_late_grace_minutes} min before shift end, is graced once a calendar month (marked Present) when it stays within these limits; one or the other, never both on one day. Without the grace (later that month, late and early on one day, or past these limits: after "late-arrival allowance until" / before "early departure after") the hours decide: Half Day when under the full-day hours.`
             : 'One clock-out before "early departure after" OR one clock-in after "late-arrival allowance until" is forgiven per calendar month; any further instance that month is marked Half Day. Leave either blank to turn that check off for this shift.'}
         </div>
       </Modal>
