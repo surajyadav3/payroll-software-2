@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
@@ -9,22 +9,24 @@ import { withSalaries } from '@/services/employeeSalaryService';
 import { fetchAllAttendanceWithPunches, fetchAttendanceRangeWithPunches } from '@/services/attendanceService';
 import { fetchAllPayslipsForReport } from '@/services/payrollService';
 import { listAllLeaveRequests } from '@/services/leaveService';
+import { fetchTenantLeaveBalances } from '@/services/leaveLedgerService';
+import { listShifts } from '@/services/tenantService';
 import { fetchTurnoverTrend } from '@/services/offboardingService';
 import { fetchHolidaysInRange } from '@/services/holidayService';
-import { fmtTime12, fmtDuration, dateStr, todayStr, fullName, scopedToOutlet, isRaniwalaTenant, isHrSupport, toTitleCase, isFullPaidDayStatus, raniwalaExtraHours, raniwalaPayableOtHours, compOffShiftHours, RANIWALA_DAY_HOURS } from '@/lib/helpers';
+import { fmtTime12, fmtDuration, dateStr, todayStr, fullName, isRaniwalaTenant, isHrSupport, toTitleCase, isFullPaidDayStatus, raniwalaExtraHours, raniwalaPayableOtHours, compOffShiftHours, RANIWALA_DAY_HOURS, weeklyOffLabel, comparePunches } from '@/lib/helpers';
 import { buildDayRows, buildAbsenteeGrid, isAbsenteeDay, buildRegister, dayTypeFor } from '@/lib/attendanceRegister';
 import ColumnPicker from '@/components/ColumnPicker';
 
 function getFirstIn(punches) {
   return (punches || [])
     .filter(p => p.punch_type === 'in')
-    .sort((a, b) => a.punch_time.localeCompare(b.punch_time))[0]?.punch_time || null;
+    .sort(comparePunches)[0]?.punch_time || null;
 }
 
 function getLastOut(punches) {
   const outs = (punches || [])
     .filter(p => p.punch_type === 'out')
-    .sort((a, b) => a.punch_time.localeCompare(b.punch_time));
+    .sort(comparePunches);
   return outs[outs.length - 1]?.punch_time || null;
 }
 
@@ -122,7 +124,7 @@ const REPORT_CONFIGS = [
     id: 'attendance_register',
     label: 'Attendance Register',
     icon: 'fa-table-cells',
-    desc: 'One row per employee for the selected date range — Emp Code, Name, Division, Department, DOJ and working days in the period, then every date with its status and clock in / clock out time, colour-coded (Late, Half Day, Leave, Weekly Off, Holiday), with totals at the end.',
+    desc: 'One row per employee for the selected date range — Emp Code, Name, Division, Department, DOJ (Raniwala: outlet and the weekly off of each employee) and working days in the period, then every date with its status and clock in / clock out time, colour-coded (Late, Half Day, Leave, Weekly Off, Holiday), with totals at the end — Total Present counts every day the employee came in (Present, Late, Half Day, Short Fall, Mispunch), not Absent / Leave (for Raniwala, Working Days sits beside it at the end and Total Present adds the weekly offs and holidays — the days paid for). Raniwala: covers the outlets ticked at the top (e.g. Office + Delhi), with an Outlet column.',
     sheetName: 'Attendance Register',
     filename: 'attendance_register',
     iconBg: 'var(--primary-light)',
@@ -175,7 +177,7 @@ const REPORT_CONFIGS = [
     id: 'overtime',
     label: 'Overtime Report',
     icon: 'fa-business-time',
-    desc: 'OT employees only: every day in the selected date range that pays overtime — day type (weekly off = that of the employee outlet, so Delhi is off Monday and a Delhi Sunday is a working day), hours worked, time past 8h 30m (on a weekly off every hour counts, no shift) and the OT hours it pays (the same slabs Run Payroll uses) — plus a summary of how many times each person did overtime and their total OT hours.',
+    desc: 'OT employees only: every day in the selected date range that pays overtime — the weekly off of each person and the day type (weekly off = that of the employee outlet, so Delhi is off Monday and a Delhi Sunday is a working day; at Gurugram each employee has their own weekly off), hours worked, time past 8h 30m (on a weekly off every hour counts, no shift) and the OT hours it pays (the same slabs Run Payroll uses) — plus a summary of how many times each person did overtime and their total OT hours.',
     sheetName: 'Overtime Days',
     filename: 'overtime',
     iconBg: 'var(--success-light)',
@@ -186,14 +188,85 @@ const REPORT_CONFIGS = [
     id: 'comp_off',
     label: 'Comp Off Earned',
     icon: 'fa-calendar-plus',
-    desc: 'Every comp off earned in the selected date range — the day, why (weekly off / holiday worked, or 4h+ past the shift on a working day) and how much. The weekly off is that of the employee outlet: Delhi is off Monday, so a Delhi Sunday only earns for time past the shift — plus a date-wise sheet (how many employees earned it each day and how much) and a total per employee. The last sheet lists every employee\'s comp off balance today (zero balances left out) with a total.',
+    desc: 'Every comp off earned in the selected date range — the day, why (weekly off / holiday worked, or 4h+ past the shift on a working day) and how much. The weekly off is that of the employee outlet: Delhi is off Monday, so a Delhi Sunday only earns for time past the shift; at Gurugram it is the own weekly off of each employee, shown in its own column — plus a date-wise sheet (how many employees earned it each day and how much) and a total per employee. The last sheet lists every employee\'s comp off balance today (zero balances left out) with a total.',
     sheetName: 'Comp Off Earned',
     filename: 'comp_off_earned',
     iconBg: '#ede9fe',
     iconFg: '#7c3aed',
     raniwalaOnly: true,
   },
+  {
+    id: 'new_joiners',
+    label: 'New Joiners',
+    icon: 'fa-user-plus',
+    desc: 'Everyone who joined in the selected months (by join date), with the full details filled for them — the Employee Details columns plus ESSL code, weekly off, default shift, probation, passport and their Earned Leave and Comp Off balance today. Two sheets: Factory, and Office with every other outlet (Office, B2B Sales, Delhi, Gurugram). Follows the Division / Department filters, not the outlet ticks.',
+    sheetName: 'New Joiners',
+    filename: 'new_joiners',
+    iconBg: 'var(--success-light)',
+    iconFg: 'var(--success)',
+    raniwalaOnly: true,
+  },
 ];
+
+// Raniwala's outlet pick: the id standing for employees with no outlet.
+const NO_OUTLET = 'none';
+
+// Dropdown of outlet tick boxes with an "All" row; at least one stays ticked.
+function OutletChecklist({ options, picked, onChange, label, disabled }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
+  const allChecked = options.every((o) => picked.has(o.id));
+  const toggle = (id) => {
+    const next = new Set(picked);
+    if (next.has(id)) {
+      if (next.size === 1) return;
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    onChange(next);
+  };
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        className="form-select"
+        style={{ minWidth: 200, maxWidth: 320, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        onClick={() => setOpen((o) => !o)}
+        disabled={disabled}
+        title={label}
+      >
+        {label}
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 30, minWidth: 240,
+          border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px',
+          background: 'var(--surface)', boxShadow: '0 6px 18px rgba(0,0,0,0.12)', fontSize: 13,
+        }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', fontWeight: 600, cursor: 'pointer' }}>
+            <input type="checkbox" checked={allChecked} onChange={() => !allChecked && onChange(new Set(options.map((o) => o.id)))} />
+            All Outlets (Combined)
+          </label>
+          {options.map((o) => (
+            <label key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', cursor: 'pointer' }}>
+              <input type="checkbox" checked={picked.has(o.id)} onChange={() => toggle(o.id)} />
+              {o.name}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function MasterReportPage() {
   const { tenant, profile } = useAuth();
@@ -209,11 +282,47 @@ export default function MasterReportPage() {
   // Raniwala's employee master (name/department/division) is maintained in
   // ALL CAPS on purpose (matches their HR system) — don't title-case it away.
   const cap = (s) => (raniwala ? (s || '') : toTitleCase(s));
-  const [employees, setEmployees] = useState([]);
+  // The whole tenant roster + its year summary, unscoped; the outlet pick
+  // below narrows both in memory, so changing outlets never refetches.
+  const [allEmployees, setAllEmployees] = useState([]);
   const [managerById, setManagerById] = useState({});
   const [loading,   setLoading]   = useState(true);
   const [exporting, setExporting] = useState(null); // null | 'all' | reportId
-  const [summary,   setSummary]   = useState([]);
+  const [allSummary, setAllSummary] = useState([]);
+
+  // Raniwala: tick any mix of outlets (Factory, Office, Delhi, Gurugram,
+  // B2B Sales) and every report covers just those employees. Local to this
+  // page; starts from the app-wide outlet (Office there meant every
+  // non-factory outlet, so it starts as that). NO_OUTLET = employees with no
+  // outlet assigned. Other tenants keep the single app-wide outlet select.
+  const hasNoOutlet = useMemo(() => allEmployees.some((e) => !e.outlet_id), [allEmployees]);
+  const outletOptions = useMemo(() => [
+    ...outlets.map((o) => ({ id: o.id, name: o.name })),
+    ...(hasNoOutlet ? [{ id: NO_OUTLET, name: 'No outlet' }] : []),
+  ], [outlets, hasNoOutlet]);
+  const [pickedOutlets, setPickedOutlets] = useState(null); // Set of outlet ids
+  useEffect(() => {
+    if (!raniwala || pickedOutlets || !outlets.length) return;
+    const isFactory = (o) => /factory/i.test(o?.name || '');
+    const selected = outlets.find((o) => o.id === selectedOutletId);
+    const ids = [...outlets.map((o) => o.id), NO_OUTLET];
+    if (!selected) setPickedOutlets(new Set(ids));
+    else if (isFactory(selected)) setPickedOutlets(new Set([selected.id]));
+    else if (/office/i.test(selected.name || '')) setPickedOutlets(new Set(ids.filter((id) => !isFactory(outlets.find((o) => o.id === id)))));
+    else setPickedOutlets(new Set([selected.id]));
+  }, [raniwala, pickedOutlets, outlets, selectedOutletId]);
+  const allOutletsPicked = !pickedOutlets || outletOptions.every((o) => pickedOutlets.has(o.id));
+  const inScope = useCallback((emp) => {
+    if (raniwala) return !pickedOutlets || pickedOutlets.has(emp.outlet_id || NO_OUTLET);
+    return !outletProfileIds || outletProfileIds.has(emp.id);
+  }, [raniwala, pickedOutlets, outletProfileIds]);
+  const employees = useMemo(() => allEmployees.filter(inScope), [allEmployees, inScope]);
+  const summary   = useMemo(() => allSummary.filter((r) => inScope(r.emp)), [allSummary, inScope]);
+  // Names of the ticked outlets for the sheet heading and file names; empty
+  // when everything is ticked (= Combined).
+  const scopeLabel = raniwala
+    ? (allOutletsPicked ? '' : outletOptions.filter((o) => pickedOutlets.has(o.id)).map((o) => o.name).join(' + '))
+    : selectedOutletName;
   const [year,      setYear]      = useState(new Date().getFullYear());
 
   // Department/Division refine the outlet-scoped roster further — applied on
@@ -238,6 +347,10 @@ export default function MasterReportPage() {
   // (for every tenant — the Attendance Register marks them HOL).
   const [leaveRequests, setLeaveRequests] = useState([]);
   const [rangeHolidays, setRangeHolidays] = useState([]);
+  // New Joiners: a month range on join date ('YYYY-MM'), this month by default.
+  const thisMonth = todayStr().slice(0, 7);
+  const [joinFrom, setJoinFrom] = useState(thisMonth);
+  const [joinTo, setJoinTo] = useState(thisMonth);
 
   const fetchData = useCallback(async () => {
     if (!tenant) return;
@@ -254,7 +367,7 @@ export default function MasterReportPage() {
       // Managers may sit outside the currently-selected outlet, so resolve
       // manager_id -> name from the full tenant roster, not the scoped list.
       setManagerById(Object.fromEntries((empsRes.data || []).map((e) => [e.id, fullName(e)])));
-      const emps     = scopedToOutlet(empsRes.data || [], outletProfileIds, 'id');
+      const emps     = empsRes.data || [];
       const attAll   = attRes.data   || [];
       const payrolls = payRes.data   || [];
       const leaves   = leaveRes.data || [];
@@ -323,25 +436,31 @@ export default function MasterReportPage() {
         };
       });
 
-      setEmployees(emps);
-      setSummary(rows);
+      setAllEmployees(emps);
+      setAllSummary(rows);
       setLeaveRequests(leaves);
     } catch (err) {
       showToast('Failed to load data: ' + err.message, 'error');
     } finally {
       setLoading(false);
     }
-  }, [tenant, year, outletProfileIds, hrSupport]);
+  }, [tenant, year, hrSupport]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const [turnover, setTurnover] = useState([]);
+  // Raniwala: the ticked outlets' employee ids (null = all ticked).
+  const turnoverIds = useMemo(() => {
+    if (!raniwala) return outletProfileIds;
+    if (allOutletsPicked) return null;
+    return new Set(employees.map((e) => e.id));
+  }, [raniwala, outletProfileIds, allOutletsPicked, employees]);
   useEffect(() => {
-    if (!tenant) return;
+    if (!tenant || (raniwala && (!pickedOutlets || loading))) return;
     let cancelled = false;
-    fetchTurnoverTrend(tenant.id, 6, outletProfileIds).then(({ data }) => { if (!cancelled) setTurnover(data || []); });
+    fetchTurnoverTrend(tenant.id, 6, turnoverIds).then(({ data }) => { if (!cancelled) setTurnover(data || []); });
     return () => { cancelled = true; };
-  }, [tenant, outletProfileIds]);
+  }, [tenant, raniwala, pickedOutlets, loading, turnoverIds]);
 
   const fetchAttendanceRange = useCallback(async () => {
     if (!tenant || !attFrom || !attTo) return;
@@ -353,9 +472,11 @@ export default function MasterReportPage() {
       ]);
       if (error) throw error;
       if (holRes.error) throw holRes.error;
-      const scoped = scopedToOutlet(data || [], outletProfileIds, 'profile_id');
+      // Kept for every outlet: each report reads it by employee id from its
+      // own (outlet-scoped) employee list, and the Office register needs the
+      // other outlets' days too.
       const map = {};
-      scoped.forEach(r => {
+      (data || []).forEach(r => {
         if (!map[r.profile_id]) map[r.profile_id] = {};
         map[r.profile_id][r.date] = r;
       });
@@ -366,7 +487,7 @@ export default function MasterReportPage() {
     } finally {
       setAttRangeLoading(false);
     }
-  }, [tenant, attFrom, attTo, outletProfileIds]);
+  }, [tenant, attFrom, attTo]);
 
   useEffect(() => { fetchAttendanceRange(); }, [fetchAttendanceRange]);
 
@@ -417,7 +538,8 @@ export default function MasterReportPage() {
   // The Attendance Register card: the same day rows laid out one employee per
   // row, one cell per date, plus working days in the range.
   const register = useMemo(() => buildRegister({
-    entries: dayRowsByEmployee, tenant, outlets, fromDate: attFrom, toDate: attTo, today: todayStr(), holidays: rangeHolidays,
+    entries: dayRowsByEmployee,
+    tenant, outlets, fromDate: attFrom, toDate: attTo, today: todayStr(), holidays: rangeHolidays,
   }), [dayRowsByEmployee, tenant, outlets, attFrom, attTo, rangeHolidays]);
 
   // The Absentees card: date-wise, everyone with no clock in and no clock
@@ -493,6 +615,24 @@ export default function MasterReportPage() {
       : []
   ), [raniwala, filteredEmployees]);
 
+  // New Joiners: the whole roster (not the outlet ticks — the report splits
+  // Factory / Office itself) joined within the month range, Division /
+  // Department filters applied, oldest joiner first.
+  const newJoiners = useMemo(() => {
+    if (!raniwala) return { factory: [], office: [] };
+    const [ty, tm] = joinTo.split('-').map(Number);
+    const from = `${joinFrom}-01`;
+    const to = dateStr(new Date(ty, tm, 0));
+    const factoryIds = new Set((outlets || []).filter((o) => /factory/i.test(o.name || '')).map((o) => o.id));
+    const list = allEmployees
+      .filter((e) => e.join_date && e.join_date >= from && e.join_date <= to && matchesDeptDivision(e))
+      .sort((a, b) => a.join_date.localeCompare(b.join_date) || fullName(a).localeCompare(fullName(b)));
+    return {
+      factory: list.filter((e) => factoryIds.has(e.outlet_id)),
+      office: list.filter((e) => !factoryIds.has(e.outlet_id)),
+    };
+  }, [raniwala, allEmployees, outlets, joinFrom, joinTo, matchesDeptDivision]);
+
   const yearOptions = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i);
 
   // Leads every sheet's rows with the employee's own code instead of a
@@ -560,6 +700,18 @@ export default function MasterReportPage() {
           ] : []),
           { header: 'Leave Allocation', key: 'leaveAllocation', width: 16 },
         ];
+      // Employee Details plus the rest of the joining form and the balances today.
+      case 'new_joiners':
+        return [
+          ...columnsFor('employee_details'),
+          { header: 'ESSL Code', key: 'esslCode', width: 11 },
+          { header: 'Weekly Off', key: 'weeklyOff', width: 12 },
+          { header: 'Default Shift', key: 'shift', width: 24 },
+          { header: 'Probation (Months)', key: 'probation', width: 12 },
+          { header: 'Passport No.', key: 'passport', width: 14 },
+          { header: 'Earned Leave Balance', key: 'earnedLeave', width: 14 },
+          { header: 'Comp Off Balance', key: 'compOffBalance', width: 13 },
+        ];
       case 'attendance_log':
         return raniwala
           ? [
@@ -568,6 +720,7 @@ export default function MasterReportPage() {
               { header: 'DESIGNATION', key: 'designation', width: 18 },
               { header: 'DIVISION', key: 'division', width: 16 },
               { header: 'DEPARTMENT', key: 'department', width: 16 },
+              { header: 'WEEKLY OFF', key: 'weeklyOff', width: 12 },
               { header: 'STATUS', key: 'status', width: 12 },
               { header: 'MANAGER', key: 'manager', width: 20 },
               { header: 'CLOCK IN', key: 'clockIn', width: 12 },
@@ -596,8 +749,13 @@ export default function MasterReportPage() {
           { header: 'EMPLOYEE NAME', key: 'name', width: 24 },
           ...(raniwala ? [{ header: 'DIVISION', key: 'division', width: 14 }] : []),
           { header: 'DEPARTMENT', key: 'department', width: 16 },
+          // Several outlets can be ticked at once.
+          ...(raniwala ? [{ header: 'OUTLET', key: 'outlet', width: 18 }] : []),
+          // Each employee's own weekly off (Gurgaon: per employee).
+          ...(raniwala ? [{ header: 'WEEKLY OFF', key: 'weeklyOff', width: 12 }] : []),
           { header: 'DOJ', key: 'doj', width: 11 },
-          { header: 'WORKING DAYS', key: 'workingDays', width: 10 },
+          // Raniwala has it at the end, beside TOTAL PRESENT.
+          ...(raniwala ? [] : [{ header: 'WORKING DAYS', key: 'workingDays', width: 10 }]),
           { header: 'Daily Status (every date)', key: 'dayStatus' },
           { header: 'Daily Clock In (every date)', key: 'dayIn' },
           { header: 'Daily Clock Out (every date)', key: 'dayOut' },
@@ -613,6 +771,7 @@ export default function MasterReportPage() {
           { header: 'COMP OFF', key: 'CO', width: 9 },
           { header: 'WEEKLY OFF', key: 'WO', width: 9 },
           { header: 'HOLIDAY', key: 'HOL', width: 9 },
+          ...(raniwala ? [{ header: 'WORKING DAYS', key: 'workingDays', width: 10 }] : []),
           { header: 'TOTAL PRESENT', key: 'presentDays', width: 10 },
         ];
       case 'monthly_payroll':
@@ -676,6 +835,7 @@ export default function MasterReportPage() {
           { header: 'DESIGNATION', key: 'designation', width: 18 },
           { header: 'DEPARTMENT', key: 'department', width: 16 },
           { header: 'LOCATION', key: 'location', width: 14 },
+          { header: 'WEEKLY OFF', key: 'weeklyOff', width: 12 },
           { header: 'DATE', key: 'date', width: 12 },
           { header: 'DAY', key: 'day', width: 6 },
           { header: 'DAY TYPE', key: 'dayType', width: 12 },
@@ -692,6 +852,7 @@ export default function MasterReportPage() {
           { header: 'DESIGNATION', key: 'designation', width: 18 },
           { header: 'DEPARTMENT', key: 'department', width: 16 },
           { header: 'LOCATION', key: 'location', width: 14 },
+          { header: 'WEEKLY OFF', key: 'weeklyOff', width: 12 },
           { header: 'DATE', key: 'date', width: 12 },
           { header: 'DAY', key: 'day', width: 6 },
           { header: 'DAY TYPE', key: 'dayType', width: 12 },
@@ -716,15 +877,25 @@ export default function MasterReportPage() {
 
   // `extras` = fetchEmployeeMasterExtras() — loaded by the download handlers.
   function addEmployeeDetailsSheet(wb, selectedKeys, extras = {}) {
-    const ws = wb.addWorksheet('Employee Details');
-    ws.columns = columnsFor('employee_details').filter((c) => selectedKeys.has(c.key));
+    fillEmployeeDetails(wb.addWorksheet('Employee Details'), filteredSummary.map((r) => r.emp), selectedKeys, extras);
+  }
+
+  // New Joiners: the same columns, Factory on one sheet, every other outlet
+  // (Office, B2B Sales, Delhi, Gurugram) on the Office sheet.
+  function addNewJoinersSheet(wb, selectedKeys, extras = {}) {
+    fillEmployeeDetails(wb.addWorksheet('New Joiners - Factory'), newJoiners.factory, selectedKeys, extras, 'new_joiners');
+    fillEmployeeDetails(wb.addWorksheet('New Joiners - Office'), newJoiners.office, selectedKeys, extras, 'new_joiners');
+  }
+
+  function fillEmployeeDetails(ws, emps, selectedKeys, extras, reportId = 'employee_details') {
+    ws.columns = columnsFor(reportId).filter((c) => selectedKeys.has(c.key));
     const address = (a) => ['line1', 'line2', 'city', 'state', 'pincode', 'country']
       .map((k) => (a?.[k] || '').toString().trim()).filter(Boolean).join(', ');
     const contacts = (list) => (Array.isArray(list) ? list : [])
       .map((c) => [c.name, c.relation && `(${c.relation})`, c.phone].filter(Boolean).join(' ')).filter(Boolean).join('; ');
     // Phone-only logins carry a placeholder address, not a real email.
     const realEmail = (e) => (/crewcore\.internal$/i.test(e || '') ? '' : (e || ''));
-    filteredSummary.forEach(({ emp }) => {
+    emps.forEach((emp) => {
       const x = extras[emp.id] || {};
       const d = x.details || {};
       ws.addRow({
@@ -768,6 +939,13 @@ export default function MasterReportPage() {
         otApplicable: emp.overtime_applicable ? 'Yes' : 'No',
         compOffEligible: emp.comp_off_eligible ? 'Yes' : 'No',
         leaveAllocation: emp.leave_allocation || 0,
+        esslCode: emp.essl_employee_code || '',
+        weeklyOff: weeklyOffOf(emp),
+        shift: x.shift_label || 'Company Default',
+        probation: emp.probation_months ?? '',
+        passport: x.passport_number || '',
+        earnedLeave: x.earned_leave_balance || 0,
+        compOffBalance: Number(emp.comp_off_balance || 0),
       });
     });
     applySheetChrome(ws, ws.columns.length);
@@ -796,7 +974,7 @@ export default function MasterReportPage() {
         const row = ws.addRow(raniwala
           ? {
               code: empCode(emp), name: cap(name), designation: cap(emp.designation), division: cap(emp.division), department: cap(emp.department),
-              status, manager: cap(managerById[emp.manager_id]),
+              weeklyOff: weeklyOffOf(emp), status, manager: cap(managerById[emp.manager_id]),
               clockIn: clockIn ? fmtTime12(clockIn) : '',
               date: dt, day: dayName,
               clockOut: clockOut ? fmtTime12(clockOut) : '',
@@ -834,7 +1012,8 @@ export default function MasterReportPage() {
     const colCount = lead.length + dates.length * parts.length + totals.length;
     const HEAD = 4;
 
-    const filters = [selectedOutletName, divisionFilter, deptFilter].filter(Boolean).join(' · ');
+    const filters = [scopeLabel, divisionFilter, deptFilter].filter(Boolean).join(' · ');
+    const outletName = Object.fromEntries((outlets || []).map((o) => [o.id, o.name]));
     const note = (row, value, font) => Object.assign(ws.getCell(row, 1), { value, font });
     note(1, `ATTENDANCE REGISTER — ${shortDate(attFrom)} to ${shortDate(attTo)} (${dates.length} days)`, { bold: true, size: 13 });
     note(2, [tenant?.company_name, filters].filter(Boolean).join(' · '), { bold: true, color: { argb: 'FF595959' } });
@@ -880,7 +1059,8 @@ export default function MasterReportPage() {
       };
       const leadValues = {
         code: empCode(emp), name: cap(fullName(emp)), division: cap(emp.division),
-        department: cap(emp.department), doj: dmy(emp.join_date), workingDays,
+        department: cap(emp.department), outlet: outletName[emp.outlet_id] || '', doj: dmy(emp.join_date), workingDays,
+        weeklyOff: weeklyOffOf(emp),
       };
       lead.forEach((l) => put(leadValues[l.key], null, l.key === 'name' ? 'left' : 'center'));
       cells.forEach((day) => {
@@ -892,7 +1072,12 @@ export default function MasterReportPage() {
           style,
         ));
       });
-      totals.forEach((t) => put(t.key === 'presentDays' ? presentDays : (counts[t.key] || 0)));
+      // Raniwala's TOTAL PRESENT is the days paid for: days present plus
+      // weekly offs and holidays (a sandwiched, unpaid weekly off is already 'A').
+      const totalPresent = raniwala ? presentDays + (counts.WO || 0) + (counts.HOL || 0) : presentDays;
+      totals.forEach((t) => put(
+        t.key === 'presentDays' ? totalPresent : t.key === 'workingDays' ? workingDays : (counts[t.key] || 0),
+      ));
     });
 
     ws.views = [{ state: 'frozen', xSplit: Math.min(2, lead.length), ySplit: HEAD + 1 }];
@@ -1077,6 +1262,7 @@ export default function MasterReportPage() {
   }
 
   const dayName = (date) => new Date(date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short' });
+  const weeklyOffOf = (emp) => weeklyOffLabel(tenant, (outlets || []).find((o) => o.id === emp.outlet_id), emp);
 
   function addOvertimeSheet(wb, selectedKeys) {
     const ws = wb.addWorksheet('Overtime Days');
@@ -1086,7 +1272,7 @@ export default function MasterReportPage() {
       const clockOut = getLastOut(rec.punches);
       ws.addRow({
         code: empCode(emp), name: cap(fullName(emp)), designation: cap(emp.designation),
-        department: cap(emp.department), location: cap(emp.outlet_location),
+        department: cap(emp.department), location: cap(emp.outlet_location), weeklyOff: weeklyOffOf(emp),
         date, day: dayName(date), dayType,
         clockIn: clockIn ? fmtTime12(clockIn) : '', clockOut: clockOut ? fmtTime12(clockOut) : '',
         hoursWorked: fmtDuration(Number(rec.total_hours) || 0), extra: fmtDuration(extra), ot,
@@ -1128,7 +1314,7 @@ export default function MasterReportPage() {
       const clockOut = getLastOut(rec.punches);
       ws.addRow({
         code: empCode(emp), name: cap(fullName(emp)), designation: cap(emp.designation),
-        department: cap(emp.department), location: cap(emp.outlet_location),
+        department: cap(emp.department), location: cap(emp.outlet_location), weeklyOff: weeklyOffOf(emp),
         date, day: dayName(date), dayType,
         reason: !offDay ? 'Extra hours past the shift'
           : dayType === 'Weekly off' ? 'Weekly off worked'
@@ -1215,7 +1401,10 @@ export default function MasterReportPage() {
     absentees:        addAbsenteesSheet,
     overtime:         addOvertimeSheet,
     comp_off:         addCompOffSheet,
+    new_joiners:      addNewJoinersSheet,
   };
+  // Builders that need fetchEmployeeMasterExtras().
+  const needsExtras = (reportId) => reportId === 'employee_details' || reportId === 'new_joiners';
 
   // Attendance Log/Register, Late Comers, Absentees, Overtime and Comp Off all read the same shared
   // attFrom/attTo range fetch instead of the `year` selector everything else uses.
@@ -1234,6 +1423,7 @@ export default function MasterReportPage() {
     }
     if (reportId === 'overtime') return overtimeRows.length;
     if (reportId === 'comp_off') return compOffRows.length || compOffBalanceRows.length;
+    if (reportId === 'new_joiners') return newJoiners.factory.length + newJoiners.office.length;
     if (!filteredSummary.length) return 0;
     if (reportId === 'employee_details') return filteredSummary.length;
     if (reportId === 'monthly_payroll')  return filteredSummary.reduce((s, r) => s + Object.keys(r.payMap).length, 0);
@@ -1253,17 +1443,38 @@ export default function MasterReportPage() {
 
   // Filenames carry the active Outlet/Department/Division filters so a batch
   // of per-outlet or per-department downloads doesn't collide or get mixed up.
-  const filterSuffix = () => {
+  const filterSuffix = (reportId) => {
     const parts = [];
-    if (selectedOutletName) parts.push(selectedOutletName);
+    if (scopeLabel && reportId !== 'new_joiners') parts.push(scopeLabel.replace(/ \+ /g, '+'));
     if (deptFilter) parts.push(deptFilter);
     if (divisionFilter) parts.push(divisionFilter);
     return parts.length ? `_${parts.join('_').replace(/\s+/g, '_')}` : '';
   };
 
-  async function loadEmployeeExtras() {
-    const { data, error } = await fetchEmployeeMasterExtras(tenant.id);
+  // With `withJoinerBalances`, each new joiner also gets earned_leave_balance:
+  // the Earned Leave ledger summed today — the same number as Leave Balances
+  // and the app. Read only for the joiners listed, not the whole tenant. Also
+  // shift_label: the default shift as the employee form shows it.
+  async function loadEmployeeExtras(withJoinerBalances = false) {
+    const joinerIds = withJoinerBalances ? [...newJoiners.factory, ...newJoiners.office].map((e) => e.id) : [];
+    const [{ data, error }, balRes, shiftRes] = await Promise.all([
+      fetchEmployeeMasterExtras(tenant.id),
+      joinerIds.length ? fetchTenantLeaveBalances(tenant.id, joinerIds) : { data: [] },
+      joinerIds.length ? listShifts(tenant.id) : { data: [] },
+    ]);
     if (error) throw error;
+    if (balRes.error) throw balRes.error;
+    if (shiftRes.error) throw shiftRes.error;
+    const shiftById = Object.fromEntries((shiftRes.data || []).map((s) => [s.id, `${s.name} (${s.start_time}-${s.end_time})`]));
+    joinerIds.forEach((id) => {
+      if (data[id]?.shift_id) data[id].shift_label = shiftById[data[id].shift_id] || '';
+    });
+    (balRes.data || [])
+      .filter((b) => /earned/i.test(b.leave_type?.name || ''))
+      .forEach((b) => {
+        if (!data[b.profile_id]) return;
+        data[b.profile_id].earned_leave_balance = (data[b.profile_id].earned_leave_balance || 0) + Number(b.balance || 0);
+      });
     return data;
   }
 
@@ -1274,9 +1485,11 @@ export default function MasterReportPage() {
       const { default: ExcelJS } = await import('exceljs');
       const config = REPORT_CONFIGS.find(r => r.id === reportId);
       const wb = new ExcelJS.Workbook();
-      SHEET_BUILDERS[reportId](wb, getSelectedKeys(reportId), reportId === 'employee_details' ? await loadEmployeeExtras() : undefined);
-      const suffix = usesDateRange(reportId) ? `${attFrom}_to_${attTo}` : dateStr(new Date());
-      await downloadWorkbook(wb, `${config.filename}${filterSuffix()}_${suffix}.xlsx`);
+      SHEET_BUILDERS[reportId](wb, getSelectedKeys(reportId), needsExtras(reportId) ? await loadEmployeeExtras(reportId === 'new_joiners') : undefined);
+      const suffix = usesDateRange(reportId) ? `${attFrom}_to_${attTo}`
+        : reportId === 'new_joiners' ? (joinFrom === joinTo ? joinFrom : `${joinFrom}_to_${joinTo}`)
+          : dateStr(new Date());
+      await downloadWorkbook(wb, `${config.filename}${filterSuffix(reportId)}_${suffix}.xlsx`);
       showToast(`${config.label} downloaded`, 'success');
     } catch (err) {
       showToast('Export failed: ' + err.message, 'error');
@@ -1291,8 +1504,8 @@ export default function MasterReportPage() {
     try {
       const { default: ExcelJS } = await import('exceljs');
       const wb = new ExcelJS.Workbook();
-      const extras = await loadEmployeeExtras();
-      visibleConfigs.forEach(config => SHEET_BUILDERS[config.id](wb, getSelectedKeys(config.id), config.id === 'employee_details' ? extras : undefined));
+      const extras = await loadEmployeeExtras(visibleConfigs.some((c) => c.id === 'new_joiners'));
+      visibleConfigs.forEach(config => SHEET_BUILDERS[config.id](wb, getSelectedKeys(config.id), needsExtras(config.id) ? extras : undefined));
       await downloadWorkbook(wb, `master_report${filterSuffix()}_${dateStr(new Date())}.xlsx`);
       showToast('Master report exported successfully', 'success');
     } catch (err) {
@@ -1342,7 +1555,16 @@ export default function MasterReportPage() {
                 Outlet persists across the whole app (OutletViewContext, localStorage-backed),
                 so it's already set once and carried between this page, Late Comers Report, etc. */}
             <div className="filter-bar" style={{ marginBottom: 20, flexWrap: 'wrap' }}>
-              {outlets.length > 0 && (
+              {raniwala && pickedOutlets && (
+                <OutletChecklist
+                  options={outletOptions}
+                  picked={pickedOutlets}
+                  onChange={setPickedOutlets}
+                  label={allOutletsPicked ? 'All Outlets (Combined)' : scopeLabel}
+                  disabled={exporting !== null}
+                />
+              )}
+              {!raniwala && outlets.length > 0 && (
                 <select
                   className="form-select"
                   value={selectedOutletId || ''}
@@ -1540,6 +1762,32 @@ export default function MasterReportPage() {
                             disabled={busy}
                             onChange={(e) => setAttTo(e.target.value)}
                             title="To date"
+                          />
+                        </div>
+                      )}
+                      {config.id === 'new_joiners' && (
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <input
+                            type="month"
+                            className="form-input"
+                            style={{ fontSize: 12, padding: '4px 6px' }}
+                            value={joinFrom}
+                            max={joinTo}
+                            disabled={busy}
+                            onChange={(e) => e.target.value && setJoinFrom(e.target.value)}
+                            title="Joined from month"
+                          />
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>to</span>
+                          <input
+                            type="month"
+                            className="form-input"
+                            style={{ fontSize: 12, padding: '4px 6px' }}
+                            value={joinTo}
+                            min={joinFrom}
+                            max={thisMonth}
+                            disabled={busy}
+                            onChange={(e) => e.target.value && setJoinTo(e.target.value)}
+                            title="Joined to month"
                           />
                         </div>
                       )}

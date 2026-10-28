@@ -75,11 +75,14 @@ export async function fetchMyLeaveBalances(profileId) {
 }
 
 /** Every employee's balances for a tenant (admin view). */
-export async function fetchTenantLeaveBalances(tenantId) {
-  const { data, error } = await supabase
+export async function fetchTenantLeaveBalances(tenantId, profileIds = null) {
+  if (profileIds && !profileIds.length) return { data: [], error: null };
+  let q = supabase
     .from('leave_balances')
     .select('*, leave_type:leave_types(name, encashable, is_unlimited)')
     .eq('tenant_id', tenantId);
+  if (profileIds) q = q.in('profile_id', profileIds);
+  const { data, error } = await q;
   return { data: data || [], error };
 }
 

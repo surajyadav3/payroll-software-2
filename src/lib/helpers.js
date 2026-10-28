@@ -271,6 +271,17 @@ export const fmtTime12 = (t) => {
   return `${h % 12 || 12}:${m} ${ap}`;
 };
 
+// Punch order within one day. A machine punch-out after midnight that counts
+// on the day worked (punches.next_day, 20261024_5) comes after that evening's
+// punches, not before the morning's.
+export const comparePunches = (a, b) =>
+  (a.next_day ? 1 : 0) - (b.next_day ? 1 : 0)
+  || String(a.punch_time).localeCompare(String(b.punch_time));
+
+/** fmtTime12 of a punch, with "(next day)" on an after-midnight punch-out. */
+export const fmtPunchTime12 = (p) =>
+  (p?.next_day ? `${fmtTime12(p.punch_time)} (next day)` : fmtTime12(p?.punch_time));
+
 export const diffHours = (t1, t2) => {
   if (!t1 || !t2) return 0;
   const [h1, m1] = t1.split(':').map(Number);
@@ -761,14 +772,23 @@ export const isHrSupport = (profile) => profile?.role === 'admin' && profile?.hr
 export const toTitleCase = (s) =>
   (s || '').toLowerCase().replace(/(^|[\s'-])\p{L}/gu, (c) => c.toUpperCase());
 
+const WEEKDAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
 /**
  * Returns the effective weekly off weekdays as an array (0=Sun…6=Sat).
  * An outlet's own `weekly_off_days` (when set) overrides the tenant-wide
  * setting entirely — e.g. Raniwala's Delhi outlet is off Monday while Office
  * and Factory are off Sunday. Falls back to the tenant's `weekly_off_days`,
  * then the legacy single `weekly_off_day` column, then Sunday-only.
+ * An outlet with `weekly_off_per_employee` (Raniwala Gurgaon) uses each
+ * employee's own Weekly Holiday from their profile first; "Flexible" or
+ * blank falls back as above. Same order as the DB's employee_weekly_off_days().
  */
-export function getTenantWeeklyOffDays(tenant, outlet = null) {
+export function getTenantWeeklyOffDays(tenant, outlet = null, employee = null) {
+  if (outlet?.weekly_off_per_employee) {
+    const day = WEEKDAY_NAMES.indexOf(String(employee?.weekly_holiday || '').trim().toLowerCase());
+    if (day >= 0) return [day];
+  }
   if (Array.isArray(outlet?.weekly_off_days) && outlet.weekly_off_days.length > 0) {
     return outlet.weekly_off_days;
   }
@@ -781,15 +801,40 @@ export function getTenantWeeklyOffDays(tenant, outlet = null) {
   return [0];
 }
 
-/** True if `date` falls on one of the effective (outlet ?? tenant) weekly off days. */
-export function isTenantWeeklyOff(date, tenant, outlet = null) {
-  const offDays = getTenantWeeklyOffDays(tenant, outlet);
+/** The employee's weekly off day name(s), e.g. 'Monday' or 'Saturday, Sunday'. */
+export function weeklyOffLabel(tenant, outlet = null, employee = null) {
+  return getTenantWeeklyOffDays(tenant, outlet, employee)
+    .map((d) => WEEKDAY_NAMES[d]).filter(Boolean)
+    .map((n) => n[0].toUpperCase() + n.slice(1)).join(', ');
+}
+
+/** True if `date` falls on one of the effective (employee ?? outlet ?? tenant) weekly off days. */
+export function isTenantWeeklyOff(date, tenant, outlet = null, employee = null) {
+  const offDays = getTenantWeeklyOffDays(tenant, outlet, employee);
   return offDays.includes(date.getDay());
 }
 
-/** True if the 'YYYY-MM-DD' date is the employee's weekly off (outlet ?? tenant). */
-export function isWeeklyOffDate(date, tenant, outlet = null) {
-  return !!date && isTenantWeeklyOff(new Date(`${date}T00:00:00`), tenant, outlet);
+/** True if the 'YYYY-MM-DD' date is the employee's weekly off (employee ?? outlet ?? tenant). */
+export function isWeeklyOffDate(date, tenant, outlet = null, employee = null) {
+  return !!date && isTenantWeeklyOff(new Date(`${date}T00:00:00`), tenant, outlet, employee);
+}
+
+/** True if the 'YYYY-MM-DD' date is before the employee joined — their calendar starts on the joining date. */
+export function isBeforeJoining(employee, date) {
+  return !!employee?.join_date && !!date && date < employee.join_date;
+}
+
+/**
+ * The holiday on 'YYYY-MM-DD' `date` that applies to this employee, or null:
+ * one added for their own outlet, or a company-wide one unless their outlet
+ * has holidays switched off (outlets.holidays_enabled — Raniwala's Delhi and
+ * Gurgaon showrooms). A holiday before the joining date is not theirs.
+ */
+export function holidayForEmployee(holidays, date, employee, outlet = null) {
+  if (!date || isBeforeJoining(employee, date)) return null;
+  return (holidays || []).find((h) => (h.holiday_date || h.date) === date && (h.outlet_id
+    ? h.outlet_id === employee?.outlet_id
+    : outlet?.holidays_enabled !== false)) || null;
 }
 
 /** Returns all calendar dates in a month that fall on the given weekday(s) (0=Sun…6=Sat). */

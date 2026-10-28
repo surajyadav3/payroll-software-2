@@ -179,10 +179,12 @@ export async function listColleagues(tenantId) {
   return { data: data || [], error };
 }
 
+const EMPLOYEE_ADMIN_COLUMNS = 'id, first_name, middle_name, last_name, department, designation, division, ctc, role, country, join_date, probation_months, pf_enabled, pf_number, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, essl_employee_code, outlet_id, outlet_location, is_withheld, withheld_reason, bank_acc, bank_name, ifsc_code, manager_id, comp_off_balance, overtime_applicable, comp_off_eligible, weekly_holiday';
+
 export async function listActiveEmployees(tenantId) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, first_name, middle_name, last_name, department, designation, division, ctc, role, country, join_date, probation_months, pf_enabled, pf_number, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, essl_employee_code, outlet_id, outlet_location, is_withheld, withheld_reason, bank_acc, bank_name, ifsc_code, manager_id, comp_off_balance, overtime_applicable, comp_off_eligible')
+    .select(EMPLOYEE_ADMIN_COLUMNS)
     .eq('tenant_id', tenantId)
     .eq('status', 'Active')
     .in('role', STAFF_ROLES)
@@ -203,7 +205,7 @@ export async function fetchEmployeeMasterExtras(tenantId) {
   const [profRes, detRes, setRes] = await Promise.all([
     supabase
       .from('profiles')
-      .select('id, email, phone, date_of_birth, pan, aadhar, esic_number, passport_number, hod_id, manager_display_name, hod_display_name, weekly_holiday')
+      .select('id, email, phone, date_of_birth, pan, aadhar, esic_number, passport_number, hod_id, manager_display_name, hod_display_name, weekly_holiday, shift_id')
       .eq('tenant_id', tenantId)
       .eq('status', 'Active')
       .in('role', STAFF_ROLES),
