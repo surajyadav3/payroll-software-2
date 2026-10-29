@@ -956,3 +956,37 @@ export async function regularizeAttendance(tenantId, {
     auditLogs
   };
 }
+
+/**
+ * One day's late arrival / early left grace as HR sees it (20261028_1):
+ * the attendance row, HR's own mark on it (early_late_grace_hr) and the day
+ * holding the month's grace, if another day holds it.
+ */
+export async function fetchEarlyLateGraceDay(profileId, date) {
+  const monthStart = `${date.slice(0, 7)}-01`;
+  const [y, m] = date.split('-').map(Number);
+  const monthEnd = `${date.slice(0, 7)}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
+  const { data: day, error } = await supabase
+    .from('attendance')
+    .select('id, date, status, total_hours, location, early_late_graced, early_late_flag, early_late_kind, punches(source, approval_status)')
+    .eq('profile_id', profileId)
+    .eq('date', date)
+    .maybeSingle();
+  if (error || !day) return { day: null, hr: null, holder: null, error };
+  const [hrRes, holderRes] = await Promise.all([
+    supabase.from('early_late_grace_hr').select('action, kind, reason, set_at').eq('attendance_id', day.id).maybeSingle(),
+    supabase.from('attendance').select('id, date, status, early_late_kind')
+      .eq('profile_id', profileId).eq('early_late_graced', true).neq('id', day.id)
+      .gte('date', monthStart).lte('date', monthEnd).order('date').limit(1),
+  ]);
+  return { day, hr: hrRes.data || null, holder: holderRes.data?.[0] || null, error: hrRes.error || holderRes.error };
+}
+
+/** HR: 'grant' (mark as graced), 'remove' or 'auto' the day's grace; move = take it off the day holding it. */
+export async function setEarlyLateGrace(attendanceId, action, { kind = null, reason = '', move = false } = {}) {
+  const { data, error } = await supabase.rpc('hr_set_early_late_grace', {
+    p_attendance_id: attendanceId, p_action: action, p_kind: kind, p_reason: reason, p_move: move,
+  });
+  if (error) throw error;
+  return data;
+}

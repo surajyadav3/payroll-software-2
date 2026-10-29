@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import ExtraHoursCell from '@/components/ExtraHoursCell';
+import EarlyLateGracePanel from '@/components/EarlyLateGracePanel';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
@@ -13,6 +14,7 @@ import { listActiveEmployees } from '@/services/employeeService';
 import {
   todayStr, dateStr, fmtTime12, fmtDuration, getInitials, getAvatarColor, fullName, scopedToOutlet, isTenantWeeklyOff,
   isShortDay, MONTHLY_LATE_HIGHLIGHT_LIMIT, isRaniwalaTenant, toTitleCase, isFullPaidDayStatus,
+  earlyLateKindLabel,
 } from '@/lib/helpers';
 
 // The day's earliest punch counts as Clock In — used only by the Late
@@ -339,7 +341,7 @@ export default function AttendancePage() {
       const outLoc = rec?.punch_out_lat != null && rec?.punch_out_lng != null ? { lat: rec.punch_out_lat, lng: rec.punch_out_lng } : null;
       // Shift picked from the day's first punch, for companies on that rule.
       const dayShift = rec?.day_shift ? `${fmtTime12(rec.day_shift.start_time)} – ${fmtTime12(rec.day_shift.end_time)}` : null;
-      return { ...emp, clockInT, clockOutT, hours, rawHours, status, badgeCls, extraPunches, punchTimes, clockInSource, clockOutSource, inLoc, outLoc, outOfGeofence: rec?.out_of_geofence || false, compOffCredit: Number(rec?.comp_off_credit) || 0, dayShift, dayShiftName: rec?.day_shift?.name || '' };
+      return { ...emp, clockInT, clockOutT, hours, rawHours, status, badgeCls, extraPunches, punchTimes, clockInSource, clockOutSource, inLoc, outLoc, outOfGeofence: rec?.out_of_geofence || false, compOffCredit: Number(rec?.comp_off_credit) || 0, dayShift, dayShiftName: rec?.day_shift?.name || '', elGraced: !!rec?.early_late_graced, elKind: rec?.early_late_kind || null };
     });
 
     setTeamData(rows);
@@ -632,6 +634,11 @@ export default function AttendancePage() {
                           {isRepeatLate && (
                             <i className="fas fa-exclamation-triangle" style={{ marginLeft: 6, color: 'var(--danger)' }} title={`Late ${lateThisMonth}x this month`} />
                           )}
+                          {r.elGraced && (
+                            <div style={{ fontSize: 11, color: 'var(--success)', marginTop: 3 }} title="This month's late arrival / early left grace is on this day">
+                              <i className="fas fa-shield-halved" style={{ marginRight: 4 }} />{earlyLateKindLabel(r.elKind)} · Graced
+                            </div>
+                          )}
                           {r.dayShift && (
                             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }} title={`Shift picked from the punch-in time: ${r.dayShiftName}`}>
                               <i className="fas fa-clock" style={{ marginRight: 4 }} />{r.dayShift}
@@ -881,6 +888,10 @@ export default function AttendancePage() {
           <label className="form-label">Reason *</label>
           <textarea className="form-input" rows={2} placeholder="e.g. Forgot to clock in, Admin override, late arrival correction..." value={manualForm.reason} onChange={(e) => setManualForm({ ...manualForm, reason: e.target.value })} style={{ resize: 'vertical' }} />
         </div>
+        {/* Raniwala HR: mark / remove / move the month's late arrival / early left grace (20261028_1). */}
+        {showManual && tenant?.early_late_grace_minutes && ['admin', 'superadmin'].includes(profile?.role) && (
+          <EarlyLateGracePanel profileId={manualForm.profile_id} date={manualForm.date} onChanged={fetchTeamData} />
+        )}
       </Modal>
     </>
   );
