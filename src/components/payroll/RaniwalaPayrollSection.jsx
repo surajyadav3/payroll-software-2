@@ -568,14 +568,16 @@ export default function RaniwalaPayrollSection({
 
   // Outlet-wise, formatted workbook: Summary + All Outlets + a sheet per
   // outlet (one sheet when a single outlet is selected), with filters on
-  // every column header (lib/salarySheetExport).
-  const exportRegister = async () => {
-    if (!views.length) return showToast('No employees to export', 'warning');
+  // every column header (lib/salarySheetExport). The main sheet holds the
+  // working employees only; `onlyLeft` builds the sheet of the inactive ones.
+  const exportRegister = async (onlyLeft = false) => {
+    const sheetViews = onlyLeft ? leftViews : views.filter((v) => !leavers[v.profileId]);
+    if (!sheetViews.length) return showToast(onlyLeft ? 'No inactive employees to export' : 'No employees to export', 'warning');
     try {
       const outletName = Object.fromEntries((outlets || []).map((o) => [o.id, o.name]));
       const empById = Object.fromEntries([...employees, ...rows.map((r) => r.emp)].map((e) => [e.id, e]));
       const byOutlet = new Map();
-      const lines = views
+      const lines = sheetViews
         .map((v) => {
           const emp = empById[v.profileId];
           const outlet = outletName[emp?.outlet_id] || 'No outlet';
@@ -613,7 +615,7 @@ export default function RaniwalaPayrollSection({
         allRecords,
         allNote: 'all outlets except Factory · HDFC Bank first, then other banks (filter the OUTLET column for one)',
         sections,
-        title: `${tenant?.company_name || 'Raniwala'} — Salary Sheet — ${monthText}`,
+        title: `${tenant?.company_name || 'Raniwala'} — ${onlyLeft ? 'Inactive Employees Salary Sheet' : 'Salary Sheet'} — ${monthText}`,
         subtitle: `${processed ? 'Processed payroll' : 'DRAFT — payroll not processed yet'} · ${selectedOutletName || 'All outlets'} · generated ${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`,
         summaryKeys: [CTC_COL, 'GROSS SALARY', EARNED_CTC_COL, EARNED_GROSS_COL, 'BASIC', 'HRA', 'OVERTIME', 'ARREAR / INCENTIVE (+/-)', TOTAL_EARNINGS_COL,
           'PF EMPLOYEE', 'ESIC EMPLOYEE', 'ADVANCE DEDUCTED', 'TDS', 'LATE DEDUCTION', ADJUSTMENT_COL, 'RETENTION', 'TOTAL DEDUCTIONS', 'NET PAY',
@@ -622,7 +624,7 @@ export default function RaniwalaPayrollSection({
         notes: SHEET_NOTES,
       });
       const outletPart = selectedOutletName ? `_${selectedOutletName.replace(/[^a-z0-9]+/gi, '_')}` : '_all_outlets';
-      await downloadWorkbook(wb, `raniwala_salary_sheet_${year}-${String(month + 1).padStart(2, '0')}${outletPart}${processed ? '' : '_draft'}.xlsx`);
+      await downloadWorkbook(wb, `raniwala_${onlyLeft ? 'inactive_' : ''}salary_sheet_${year}-${String(month + 1).padStart(2, '0')}${outletPart}${processed ? '' : '_draft'}.xlsx`);
       showToast(processed ? 'Salary sheet exported' : 'Draft salary sheet exported — payroll is not processed yet', 'success');
     } catch (err) {
       showToast('Could not build the salary sheet: ' + err.message, 'error');
@@ -827,7 +829,7 @@ export default function RaniwalaPayrollSection({
             <button className="btn btn-outline btn-sm" onClick={() => setShowGuide((v) => !v)}>
               <i className="fas fa-question-circle" /> {showGuide ? 'Hide rules' : 'How it is calculated'}
             </button>
-            <button className="btn btn-outline btn-sm" onClick={exportRegister} title="Every employee with every component">
+            <button className="btn btn-outline btn-sm" onClick={() => exportRegister()} title="Every working employee with every component (inactive employees have their own sheet)">
               <i className="fas fa-file-excel" /> Salary Sheet
             </button>
             {processed && (
@@ -937,6 +939,9 @@ export default function RaniwalaPayrollSection({
                 Left (or leaving) this month, paid only up to their last day. Check their days before processing; they are paid in the same run as everyone else.
               </div>
             </div>
+            <button className="btn btn-outline btn-sm" onClick={() => exportRegister(true)} title="Salary sheet of the inactive employees only">
+              <i className="fas fa-file-excel" /> Inactive Salary Sheet
+            </button>
           </div>
           <div style={{ display: 'flex', gap: 24, padding: '12px 20px', borderBottom: '1px solid var(--border)', fontSize: 13, flexWrap: 'wrap' }}>
             <span><strong>{leftViews.length}</strong> <span style={muted}>employees</span></span>
