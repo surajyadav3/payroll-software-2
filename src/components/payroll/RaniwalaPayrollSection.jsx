@@ -370,7 +370,7 @@ export function EmployeePayrollModal({ row, tenant, profile, month, year, additi
         </div>
       </Section>
 
-      <Section title={`Arrear / incentive for ${monthText}`} hint="Any due, last month's deduction or incentive. It is paid or deducted in this month's payroll only; the remark prints on the payslip.">
+      <Section title={`Arrear / incentive for ${monthText}`} hint="Any due, last month's deduction or incentive. It is paid or deducted in this month's payroll only; the remark is for HR only and is not printed on the payslip.">
         {additions.length > 0 && (
           <div style={{ marginBottom: 10 }}>
             {additions.map((a) => (
@@ -477,13 +477,13 @@ export function EmployeePayrollModal({ row, tenant, profile, month, year, additi
         <div className="grid-2" style={{ marginBottom: 0 }}>
           <div>
             {pay.earnings.map((e, i) => (
-              <div className="payslip-row" key={i}><span>{e.name}{e.note ? <span style={small}> · {e.note}</span> : null}</span><span>{fmt(e.amount)}</span></div>
+              <div className="payslip-row" key={i}><span>{e.name}</span><span>{fmt(e.amount)}</span></div>
             ))}
             <div className="payslip-row" style={{ fontWeight: 600, borderTop: '1px solid var(--border)' }}><span>{RANIWALA_LABELS.totalEarnings}</span><span>{fmt(pay.totalEarnings)}</span></div>
           </div>
           <div>
             {pay.deductions.map((d, i) => (
-              <div className="payslip-row" key={i}><span>{d.name}{d.note ? <span style={small}> · {d.note}</span> : null}</span><span>-{fmt(d.amount)}</span></div>
+              <div className="payslip-row" key={i}><span>{d.name}</span><span>-{fmt(d.amount)}</span></div>
             ))}
             {pay.advanceDeduction > 0 && (
               <div className="payslip-row"><span>Advance <span style={small}>· balance after {fmt(pay.advanceBalance)}</span></span><span>-{fmt(pay.advanceDeduction)}</span></div>
