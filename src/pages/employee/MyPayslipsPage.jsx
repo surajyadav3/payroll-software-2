@@ -3,7 +3,11 @@ import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import { useAuth } from '@/context/AuthContext';
 import { fetchMyPayslip } from '@/services/payrollService';
+import { fetchMySalary } from '@/services/employeeSalaryService';
+import { fetchLeaveBalancesAsOf } from '@/services/leaveLedgerService';
+import { monthEndDate, parseBreakdown } from '@/lib/raniwalaPayroll';
 import { fmt, monthLabel } from '@/lib/helpers';
+import RaniwalaPayslip from '@/components/payroll/RaniwalaPayslip';
 
 // Masks a formatted amount behind ₹ •••••• until revealed
 function Amt({ value, show }) {
@@ -19,6 +23,24 @@ export default function MyPayslipsPage() {
   const [loading, setLoading] = useState(true);
   const [showAmounts, setShowAmounts] = useState(false);
   const [showCTC, setShowCTC] = useState(false);
+  const salaryPrivate = !!tenant?.salary_private;
+  // Hidden from employees until HR confirms the figures
+  // (tenants.salary_visible_to_employee, migration 20261014_6 — the DB
+  // returns nothing until then either).
+  const showOwnSalary = salaryPrivate && !!tenant?.salary_visible_to_employee;
+  const [mySalary, setMySalary] = useState(null);
+  const [myLeave, setMyLeave] = useState(null);
+
+  useEffect(() => {
+    if (!showOwnSalary || !profile?.id) return;
+    fetchMySalary(profile.id).then(({ data }) => setMySalary(data || null));
+  }, [showOwnSalary, profile?.id]);
+
+  const salaryCards = !salaryPrivate
+    ? [['Monthly CTC', profile?.ctc]]
+    : showOwnSalary
+      ? [['Monthly Gross Salary', mySalary?.gross], ['Monthly CTC', mySalary?.ctc]]
+      : [];
 
   const fetchData = useCallback(async () => {
     if (!profile || !tenant) return;
@@ -26,6 +48,11 @@ export default function MyPayslipsPage() {
     try {
       const { data } = await fetchMyPayslip(tenant.id, profile.id, month, year);
       setSlip(data);
+      // A Raniwala slip shows the leave balance on the month's last day.
+      const leave = data && parseBreakdown(data).raniwala
+        ? (await fetchLeaveBalancesAsOf(tenant.id, monthEndDate(year, month), [profile.id])).data[profile.id]
+        : null;
+      setMyLeave(leave || null);
     } finally {
       setLoading(false);
     }
@@ -49,31 +76,37 @@ export default function MyPayslipsPage() {
     <>
       <Header title="My Payslips" breadcrumb={monthLabel(month, year)} />
       <div className="page-content">
+        {salaryCards.length > 0 && (
         <div className="stats-row">
-          {/* CTC card — masked by default */}
-          <div className="stat-card">
-            <div className="stat-icon green">
-              <i className="fas fa-wallet" />
+          {/* Salary cards — masked by default. A salary-private tenant keeps the
+              salary in employee_salaries (only HR and the employee can read it):
+              gross and CTC; otherwise the profile's CTC as before. */}
+          {salaryCards.map(([label, value]) => (
+            <div className="stat-card" key={label}>
+              <div className="stat-icon green">
+                <i className="fas fa-wallet" />
+              </div>
+              <div className="stat-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontFamily: showCTC ? 'inherit' : 'monospace', letterSpacing: showCTC ? 'normal' : 2 }}>
+                  {showCTC ? (Number(value) ? `₹${Number(value).toLocaleString('en-IN')}` : '₹ 0') : '₹ ••••••'}
+                </span>
+                <button
+                  onClick={() => setShowCTC((v) => !v)}
+                  title={showCTC ? 'Hide salary' : 'Show salary'}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: 'var(--text-muted)', fontSize: 13, padding: 2,
+                    lineHeight: 1,
+                  }}
+                >
+                  <i className={`fas ${showCTC ? 'fa-eye-slash' : 'fa-eye'}`} />
+                </button>
+              </div>
+              <div className="stat-label">{label}</div>
             </div>
-            <div className="stat-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontFamily: showCTC ? 'inherit' : 'monospace', letterSpacing: showCTC ? 'normal' : 2 }}>
-                {showCTC ? (profile?.ctc ? `₹${profile.ctc.toLocaleString()}` : '₹ 0') : '₹ ••••••'}
-              </span>
-              <button
-                onClick={() => setShowCTC((v) => !v)}
-                title={showCTC ? 'Hide salary' : 'Show salary'}
-                style={{
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: 'var(--text-muted)', fontSize: 13, padding: 2,
-                  lineHeight: 1,
-                }}
-              >
-                <i className={`fas ${showCTC ? 'fa-eye-slash' : 'fa-eye'}`} />
-              </button>
-            </div>
-            <div className="stat-label">Monthly CTC</div>
-          </div>
+          ))}
         </div>
+        )}
 
         <div className="filter-bar">
           <div className="month-selector">
@@ -120,6 +153,12 @@ export default function MyPayslipsPage() {
                   Salary amounts are hidden for privacy. Click <strong>Reveal Amounts</strong> to view.
                 </div>
               )}
+              {breakdown.raniwala ? (
+                <RaniwalaPayslip
+                  slip={slip} breakdown={breakdown} ctc={mySalary?.ctc} leave={myLeave} companyName={tenant?.company_name} monthText={monthLabel(month, year)} mask={!showAmounts}
+                  action={<button className="btn btn-outline btn-sm" onClick={() => window.print()}><i className="fas fa-print" /> Print</button>}
+                />
+              ) : (
               <div className="payslip">
                 <div className="payslip-header">
                   <div>
@@ -191,6 +230,7 @@ export default function MyPayslipsPage() {
                   </div>
                 )}
               </div>
+              )}
             </div>
           </div>
         )}

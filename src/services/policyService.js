@@ -1,56 +1,101 @@
 import { supabase } from '@/lib/supabase';
-import { notifyTenant, notifyRoles } from './notificationService';
+import { notifyRoles } from './notificationService';
 import { fullName } from '@/lib/helpers';
 
 const BUCKET = 'policy-pdfs';
 
-/** List policy roll-outs for a tenant, newest first. */
+// Policies: category, summary, draft / published / archived, must-acknowledge, versions with a
+// "what changed" note (migration 20261008_1_comms_manage_archive). Employees only ever receive
+// published policies (RLS); the database notifies everyone when one goes live or gets a new version.
+
+export const POLICY_CATEGORIES = {
+  general: 'General', hr: 'HR', leave: 'Leave', attendance: 'Attendance', conduct: 'Code of conduct',
+  it: 'IT & security', travel: 'Travel', finance: 'Finance & expenses', safety: 'Health & safety',
+};
+
+const SELECT = '*, author:profile_directory!policies_created_by_fkey(first_name, middle_name, last_name)';
+
+/** The policy library everyone reads: published only, newest first. */
 export async function listPolicies(tenantId) {
   const { data, error } = await supabase
     .from('policies')
-    .select('*, author:profile_directory!policies_created_by_fkey(first_name, middle_name, last_name)')
+    .select(SELECT)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'published')
+    .order('published_at', { ascending: false, nullsFirst: false });
+  return { data: data || [], error };
+}
+
+/** HR: every policy, drafts and archived included. */
+export async function listManagedPolicies(tenantId) {
+  const { data, error } = await supabase
+    .from('policies')
+    .select(SELECT)
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
   return { data: data || [], error };
 }
 
+async function uploadAttachment(tenantId, file) {
+  const path = `${tenantId}/${Date.now()}-${file.name}`;
+  const { error } = await supabase.storage
+    .from(BUCKET)
+    .upload(path, file, { contentType: file.type || 'application/octet-stream' });
+  if (error) return { error };
+  const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(path);
+  return { pdf_url: pub.publicUrl, pdf_name: file.name };
+}
+
+const toRow = (f) => ({
+  title: f.title.trim(),
+  body: (f.body || '').trim(),
+  category: f.category,
+  summary: f.summary?.trim() || null,
+  requires_ack: !!f.requiresAck,
+});
+
 /**
- * Admin-only: upload a policy PDF and create the policy record.
- * pdfFile may be null if the admin only wants to post text.
+ * Admin-only: create a policy, optionally with a PDF / photo. `publish` false saves a draft
+ * nobody sees yet; true publishes it (the database notifies everyone).
  */
-export async function createPolicy({ tenantId, createdBy, title, body, pdfFile }) {
-  let pdf_url = '';
-  let pdf_name = '';
-
+export async function createPolicy({ tenantId, createdBy, form, pdfFile, publish }) {
+  let file = { pdf_url: '', pdf_name: '' };
   if (pdfFile) {
-    const path = `${tenantId}/${Date.now()}-${pdfFile.name}`;
-    const { error: uploadErr } = await supabase.storage
-      .from(BUCKET)
-      .upload(path, pdfFile, { contentType: pdfFile.type || 'application/octet-stream' });
-    if (uploadErr) return { error: uploadErr };
-
-    const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(path);
-    pdf_url = pub.publicUrl;
-    pdf_name = pdfFile.name;
+    const up = await uploadAttachment(tenantId, pdfFile);
+    if (up.error) return { error: up.error };
+    file = up;
   }
-
-  const { data: inserted, error } = await supabase
+  const { error } = await supabase
     .from('policies')
-    .insert([{ tenant_id: tenantId, created_by: createdBy, title, body, pdf_url, pdf_name }])
-    .select('id')
-    .single();
+    .insert([{ ...toRow(form), ...file, tenant_id: tenantId, created_by: createdBy, status: publish ? 'published' : 'draft' }]);
+  return { error };
+}
 
-  if (!error && inserted?.id) {
-    await notifyTenant(tenantId, {
-      type: 'policy',
-      title: 'New policy published',
-      body: title,
-      linkKey: 'policies',
-      actorId: createdBy,
-      relatedId: inserted.id,
-    }, createdBy);
+/** Admin-only: edit a policy's text / attachment in place (no new version, nobody re-asked). */
+export async function updatePolicy({ tenantId, id, form, pdfFile, removeFile }) {
+  const row = toRow(form);
+  if (pdfFile) {
+    const up = await uploadAttachment(tenantId, pdfFile);
+    if (up.error) return { error: up.error };
+    Object.assign(row, up);
+  } else if (removeFile) {
+    Object.assign(row, { pdf_url: '', pdf_name: '' });
   }
+  const { error } = await supabase.from('policies').update(row).eq('id', id);
+  return { error };
+}
 
+/**
+ * Admin-only: publish what is now saved as the next version, with a note on what changed.
+ * `reask` clears everyone's acknowledgement so they confirm the new version (old count kept in history).
+ */
+export async function publishPolicyVersion(id, changeNote, reask = true) {
+  const { data, error } = await supabase.rpc('policy_new_version', { p_policy_id: id, p_change_note: changeNote, p_reask: reask });
+  return { data, error };
+}
+
+export async function setPolicyStatus(id, status) {
+  const { error } = await supabase.from('policies').update({ status }).eq('id', id);
   return { error };
 }
 

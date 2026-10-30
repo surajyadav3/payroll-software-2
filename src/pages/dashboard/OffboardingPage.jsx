@@ -5,12 +5,23 @@ import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import {
   listChecklistItems, createChecklistItem, deleteChecklistItem,
-  listProcesses, startProcess, updateProcess, updateTaskStatus,
+  listProcesses, startProcess, updateProcess, updateTaskStatus, exitCountdown,
 } from '@/services/offboardingService';
 import { listActiveEmployees } from '@/services/employeeService';
-import { fullName, fmt } from '@/lib/helpers';
+import { fullName, fmt, todayStr } from '@/lib/helpers';
 
 const STATUS_BADGE = { 'In Progress': 'badge-info', Completed: 'badge-success', Cancelled: 'badge-danger' };
+const emptyStartForm = () => ({ profile_id: '', reason: '', applied_on: todayStr(), exit_date: '', notes: '' });
+
+function StatusCell({ process }) {
+  const countdown = exitCountdown(process);
+  return (
+    <>
+      <span className={`badge ${STATUS_BADGE[process.status]}`}>{process.status}</span>
+      {countdown && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{countdown}</div>}
+    </>
+  );
+}
 
 export default function OffboardingPage() {
   const { tenant, profile } = useAuth();
@@ -23,7 +34,7 @@ export default function OffboardingPage() {
   const [newItem, setNewItem] = useState({ title: '', description: '', category: 'General' });
 
   const [showStartModal, setShowStartModal] = useState(false);
-  const [startForm, setStartForm] = useState({ profile_id: '', reason: '', exit_date: '', last_working_day: '', notes: '' });
+  const [startForm, setStartForm] = useState(emptyStartForm);
 
   const [activeProcess, setActiveProcess] = useState(null);
 
@@ -62,18 +73,27 @@ export default function OffboardingPage() {
 
   const handleStart = async () => {
     if (!startForm.profile_id) return showToast('Select an employee', 'error');
+    if (!startForm.exit_date) return showToast('Enter the exit date (last day)', 'error');
     const { error } = await startProcess(tenant.id, startForm.profile_id, startForm, profile.id);
     if (error) return showToast('Failed: ' + error.message, 'error');
     showToast('Offboarding started', 'success');
     setShowStartModal(false);
-    setStartForm({ profile_id: '', reason: '', exit_date: '', last_working_day: '', notes: '' });
+    setStartForm(emptyStartForm());
     fetchData();
   };
 
   const handleProcessStatus = async (id, status) => {
     const { error } = await updateProcess(id, { status });
     if (error) return showToast('Failed: ' + error.message, 'error');
-    showToast('Status updated', 'success');
+    showToast(status === 'Cancelled' ? 'Offboarding cancelled' : 'Offboarding reopened', 'success');
+    fetchData();
+  };
+
+  const handleExitDate = async (id, exitDate) => {
+    if (!exitDate) return;
+    const { error } = await updateProcess(id, { exit_date: exitDate });
+    if (error) return showToast('Failed: ' + error.message, 'error');
+    showToast('Exit date updated', 'success');
     fetchData();
   };
 
@@ -122,7 +142,7 @@ export default function OffboardingPage() {
           <div className="card">
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Employee</th><th>Status</th><th>Exit Date</th><th>Last Working Day</th><th>Tasks</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Employee</th><th>Status</th><th>Applied On</th><th>Exit Date</th><th>Tasks</th><th>Actions</th></tr></thead>
                 <tbody>
                   {processes.length === 0 ? (
                     <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>No offboarding processes started yet.</td></tr>
@@ -132,9 +152,9 @@ export default function OffboardingPage() {
                     return (
                       <tr key={p.id}>
                         <td>{fullName(p.profile)}</td>
-                        <td><span className={`badge ${STATUS_BADGE[p.status]}`}>{p.status}</span></td>
+                        <td><StatusCell process={p} /></td>
+                        <td>{fmt.date(p.applied_on)}</td>
                         <td>{fmt.date(p.exit_date)}</td>
-                        <td>{fmt.date(p.last_working_day)}</td>
                         <td>{done}/{total}</td>
                         <td><button className="btn btn-outline btn-sm" onClick={() => setActiveProcess(p)}>Manage</button></td>
                       </tr>
@@ -166,14 +186,17 @@ export default function OffboardingPage() {
         </div>
         <div className="form-row">
           <div className="form-group">
-            <label className="form-label">Exit Date</label>
-            <input className="form-input" type="date" value={startForm.exit_date} onChange={(e) => setStartForm({ ...startForm, exit_date: e.target.value })} />
+            <label className="form-label">Applied On</label>
+            <input className="form-input" type="date" value={startForm.applied_on} onChange={(e) => setStartForm({ ...startForm, applied_on: e.target.value })} />
           </div>
           <div className="form-group">
-            <label className="form-label">Last Working Day</label>
-            <input className="form-input" type="date" value={startForm.last_working_day} onChange={(e) => setStartForm({ ...startForm, last_working_day: e.target.value })} />
+            <label className="form-label">Exit Date (last day) *</label>
+            <input className="form-input" type="date" value={startForm.exit_date} onChange={(e) => setStartForm({ ...startForm, exit_date: e.target.value })} />
           </div>
         </div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: -4 }}>
+          Status stays In Progress until the exit date. The day after, it changes to Completed on its own and the employee is set Inactive.
+        </p>
         <div className="form-group">
           <label className="form-label">Notes</label>
           <textarea className="form-input" rows={3} value={startForm.notes} onChange={(e) => setStartForm({ ...startForm, notes: e.target.value })} />
@@ -185,13 +208,36 @@ export default function OffboardingPage() {
       >
         {activeProcess && (
           <>
-            <div className="form-group">
-              <label className="form-label">Status</label>
-              <select className="form-select" value={activeProcess.status} onChange={(e) => handleProcessStatus(activeProcess.id, e.target.value)}>
-                <option>In Progress</option>
-                <option>Completed</option>
-                <option>Cancelled</option>
-              </select>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Status</label>
+                <div><StatusCell process={activeProcess} /></div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Applied On</label>
+                <div style={{ fontSize: 13 }}>{fmt.date(activeProcess.applied_on)}</div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Exit Date (last day)</label>
+                <input key={activeProcess.exit_date} className="form-input" type="date" defaultValue={activeProcess.exit_date}
+                  disabled={activeProcess.status === 'Cancelled'}
+                  onBlur={(e) => e.target.value !== activeProcess.exit_date && handleExitDate(activeProcess.id, e.target.value)} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)', flex: '1 1 200px' }}>
+                {activeProcess.status === 'Cancelled'
+                  ? 'This offboarding is cancelled.'
+                  : 'Status follows the exit date: In Progress until then, Completed (employee Inactive) the day after.'}
+              </span>
+              {activeProcess.status === 'Cancelled' ? (
+                <button className="btn btn-outline btn-sm" onClick={() => handleProcessStatus(activeProcess.id, 'In Progress')}>Reopen</button>
+              ) : (
+                <button className="btn btn-outline btn-sm" style={{ color: 'var(--danger)' }}
+                  onClick={() => confirm(`Cancel the offboarding for ${fullName(activeProcess.profile)}?${activeProcess.status === 'Completed' ? ' They will be set Active again.' : ''}`) && handleProcessStatus(activeProcess.id, 'Cancelled')}>
+                  Cancel Offboarding
+                </button>
+              )}
             </div>
             <div className="table-wrap">
               <table>

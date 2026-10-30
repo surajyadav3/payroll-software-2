@@ -2,10 +2,13 @@ import React, { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import OutletSelect from '@/components/OutletSelect';
 import { showToast } from '@/components/Toast';
+import BulkApproveBar, { BulkHeadCell, BulkRowCell } from '@/components/BulkApproveBar';
+import { useBulkApproval } from '@/hooks/useBulkApproval';
 import { useAuth } from '@/context/AuthContext';
-import { useOutletView } from '@/context/OutletViewContext';
+import { useRequestOutletScope } from '@/context/OutletViewContext';
 import { listAllSpecialRequests, updateSpecialRequestStatus } from '@/services/specialRequestService';
-import { fmt, fullName, scopedToOutlet } from '@/lib/helpers';
+import { fmt, fullName, scopedToOutlet, matchesSearch } from '@/lib/helpers';
+import { exportRequestSheet, approverRoleLabel } from '@/lib/requestExport';
 
 const TYPE_BADGE = {
   Overtime: 'badge-info',
@@ -23,17 +26,18 @@ function getOtPay(req) {
 
 export default function SpecialRequestsPage() {
   const { tenant, profile } = useAuth();
-  const { outletProfileIds } = useOutletView();
+  const outletProfileIds = useRequestOutletScope();
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('Pending');
   const [typeFilter, setTypeFilter] = useState('All');
+  const [search, setSearch] = useState('');
   const [acting, setActing] = useState(null); // id of the request currently being approved/rejected
 
   const isManager = profile?.role === 'manager';
 
   const fetchRequests = useCallback(async () => {
-    if (!tenant) return;
+    if (!tenant || outletProfileIds === undefined) return;
     setLoading(true);
     try {
       // Everyone sees every special request tenant-wide (any status, any
@@ -67,10 +71,48 @@ export default function SpecialRequestsPage() {
   const filtered = requests.filter(r => {
     const matchStatus = statusFilter === 'All' || r.status === statusFilter;
     const matchType   = typeFilter   === 'All' || r.request_type === typeFilter;
-    return matchStatus && matchType;
+    return matchStatus && matchType
+      && matchesSearch(search, fullName(r.profile), r.profile?.employee_id, r.profile?.department);
   });
 
   const pending = requests.filter(r => r.status === 'Pending').length;
+
+  const bulk = useBulkApproval({
+    rows: filtered,
+    loading,
+    // Same gate as the per-row buttons below.
+    canAct: (req) => req.status === 'Pending' && (!isManager || req.required_approver_role === 'manager'),
+    onDone: fetchRequests,
+    decide: (req, approve) => updateSpecialRequestStatus(req.id, approve ? 'Approved' : 'Rejected', profile.id, profile.role),
+  });
+
+  const exportList = () => {
+    const pendingTab = statusFilter === 'Pending';
+    exportRequestSheet(filtered.map((req) => {
+      const m = req.overtime_minutes || 0;
+      const details = req.request_type === 'Late Arrival' ? `Late ${req.late_hours || ''}`.trim()
+        : req.request_type === 'Salary Overtime' ? `${Math.floor(m / 60)}h ${m % 60}m worked, ${req.overtime_hours || 0}h payable`
+          : 'Overtime day';
+      return {
+        'Emp Code': req.profile?.employee_id || '',
+        Employee: fullName(req.profile),
+        Department: req.profile?.department || '',
+        Type: req.request_type,
+        Date: fmt.date(req.request_date),
+        Details: details,
+        'Est. OT Pay': req.request_type === 'Salary Overtime' ? getOtPay(req) : '',
+        Reason: req.reason || '',
+        Status: req.status,
+        ...(pendingTab
+          ? { 'Waiting On': approverRoleLabel(req.required_approver_role) }
+          : { 'Decided By': req.approval_level === 'self' ? 'Auto-approved' : req.approver ? fullName(req.approver) : '' }),
+      };
+    }), {
+      sheet: `${statusFilter} Special`,
+      file: `${statusFilter} special requests${typeFilter !== 'All' ? ` ${typeFilter}` : ''}`,
+      widths: [10, 24, 18, 16, 13, 32, 12, 40, 10, 24],
+    });
+  };
 
   return (
     <div className="page-container">
@@ -103,6 +145,13 @@ export default function SpecialRequestsPage() {
           </h3>
           <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
             <OutletSelect />
+            <input
+              className="form-input"
+              style={{ maxWidth: 220 }}
+              placeholder="Search employee, EMP code…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
             <div className="flex gap-1">
               {['Pending', 'Approved', 'Rejected', 'All'].map(s => (
                 <button
@@ -125,13 +174,19 @@ export default function SpecialRequestsPage() {
                 </button>
               ))}
             </div>
+            <button className="btn btn-sm btn-outline" onClick={exportList} disabled={loading || filtered.length === 0}>
+              <i className="fas fa-file-excel" style={{ marginRight: 6 }} />Export
+            </button>
           </div>
         </div>
+
+        <BulkApproveBar bulk={bulk} />
 
         <div className="table-wrap">
           <table className="table">
             <thead>
               <tr>
+                <BulkHeadCell bulk={bulk} />
                 <th>Employee</th>
                 <th>Type</th>
                 <th>Date</th>
@@ -145,9 +200,10 @@ export default function SpecialRequestsPage() {
               {loading ? (
                 <tr><td colSpan="7" style={{ textAlign: 'center', padding: 40 }}><div className="spinner" /></td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan="7" style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>No requests found.</td></tr>
+                <tr><td colSpan="7" style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>No requests found{search.trim() ? ` for "${search.trim()}"` : ''}.</td></tr>
               ) : filtered.map(req => (
                 <tr key={req.id}>
+                  <BulkRowCell bulk={bulk} row={req} />
                   <td>
                     <div style={{ fontWeight: 600 }}>
                       {fullName(req.profile)}
@@ -220,7 +276,7 @@ export default function SpecialRequestsPage() {
                                 ? 'Approve — full day, no deduction'
                                 : 'Approve'
                           }
-                          disabled={acting === req.id}
+                          disabled={acting === req.id || bulk.busy}
                           onClick={() => handleStatusChange(req.id, 'Approved')}
                         >
                           <i className="fas fa-check" />
@@ -228,7 +284,7 @@ export default function SpecialRequestsPage() {
                         <button
                           className="btn btn-sm btn-danger"
                           title="Reject"
-                          disabled={acting === req.id}
+                          disabled={acting === req.id || bulk.busy}
                           onClick={() => handleStatusChange(req.id, 'Rejected')}
                         >
                           <i className="fas fa-times" />

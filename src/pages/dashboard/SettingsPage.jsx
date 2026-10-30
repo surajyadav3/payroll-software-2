@@ -6,6 +6,7 @@ import Modal from '@/components/Modal';
 import NotificationChannelsCard from '@/components/NotificationChannelsCard';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useFeatures } from '@/context/FeatureContext';
 import { useOutletView } from '@/context/OutletViewContext';
 import {
   updateTenant,
@@ -18,19 +19,24 @@ import {
   updateShiftThresholds,
   listHolidays,
   addHoliday,
+  updateHoliday,
   updateHolidayStatus,
+  deleteHoliday,
   importHolidays,
   initializeMajorHolidays,
   updateOutlet,
   resolveAttendanceSettings,
   recomputeAttendanceLateStatus,
 } from '@/services/tenantService';
-import { monthLabel, dateStr } from '@/lib/helpers';
+import { monthLabel, dateStr, isHrSupport } from '@/lib/helpers';
 import { createGroup, linkToGroup, leaveGroup } from '@/services/groupService';
 
 export default function SettingsPage() {
   const { tenant, profile, refreshProfile } = useAuth();
+  // HR Support (no payroll) doesn't see the pay cycle, currency or late pay deduction.
+  const hrSupport = isHrSupport(profile);
   const { outlets, selectedOutletId, selectedOutletName, selectOutlet, refreshOutlets } = useOutletView();
+  const { isEnabled } = useFeatures();
   const navigate = useNavigate();
   const [form, setForm] = useState({
     company_name: '', pay_day: 1, currency: '₹',
@@ -44,6 +50,7 @@ export default function SettingsPage() {
     min_half_day_hours: '', min_full_day_hours: '',
     geofence_lat: '', geofence_lng: '', geofence_radius: '',
     shift_start: '', shift_end: '', late_threshold: '', weekly_off_days: [],
+    weekly_off_per_employee: false, holidays_enabled: true,
   });
   const [savingAtt, setSavingAtt] = useState(false);
   const [allowAnyOutletClockin, setAllowAnyOutletClockin] = useState(false);
@@ -65,6 +72,8 @@ export default function SettingsPage() {
   const [newHolidayDate, setNewHolidayDate] = useState(new Date().toISOString().slice(0, 10));
   const [newHolidayDesc, setNewHolidayDesc] = useState('');
   const [holidayLoading, setHolidayLoading] = useState(false);
+  // Set while the holiday modal is editing an existing holiday (null = adding a new one).
+  const [editingHolidayId, setEditingHolidayId] = useState(null);
   const [importLoading, setImportLoading] = useState(false);
 
   // Organization Group state
@@ -126,9 +135,48 @@ export default function SettingsPage() {
     fetchHolidays();
   };
 
-  const handleAddHoliday = async () => {
+  const openAddHoliday = () => {
+    setEditingHolidayId(null);
+    setNewHolidayName('');
+    setNewHolidayDesc('');
+    setNewHolidayDate(new Date().toISOString().slice(0, 10));
+    setShowHolidayModal(true);
+  };
+
+  const openEditHoliday = (holiday) => {
+    setEditingHolidayId(holiday.id);
+    setNewHolidayName(holiday.name || '');
+    setNewHolidayDesc(holiday.description || '');
+    setNewHolidayDate(getHolidayDate(holiday) || new Date().toISOString().slice(0, 10));
+    setShowHolidayModal(true);
+  };
+
+  const closeHolidayModal = () => {
+    setShowHolidayModal(false);
+    setEditingHolidayId(null);
+  };
+
+  const handleSaveHoliday = async () => {
     if (!newHolidayName.trim() || !newHolidayDate) return showToast('Holiday name and date are required', 'warning');
     if (!tenant || !profile) return showToast('Unable to save holiday', 'error');
+    if (editingHolidayId) {
+      setHolidayLoading(true);
+      const { error } = await updateHoliday(editingHolidayId, {
+        name: newHolidayName.trim(),
+        holiday_date: newHolidayDate,
+        description: newHolidayDesc.trim(),
+      });
+      setHolidayLoading(false);
+      if (error) {
+        // holidays_tenant_outlet_date_key: one holiday per date per outlet (or company-wide).
+        if (error.code === '23505') return showToast('Another holiday already exists on that date', 'error');
+        return showToast('Failed to update holiday: ' + error.message, 'error');
+      }
+      showToast('Holiday updated', 'success');
+      closeHolidayModal();
+      fetchHolidays();
+      return;
+    }
     setHolidayLoading(true);
     const { error } = await addHoliday(tenant.id, {
       outlet_id: selectedOutletId || null,
@@ -157,6 +205,17 @@ export default function SettingsPage() {
     setHolidayLoading(false);
     if (error) return showToast('Status update failed: ' + error.message, 'error');
     showToast(`Holiday ${status.toLowerCase()}`, 'success');
+    fetchHolidays();
+  };
+
+  const handleDeleteHoliday = async (holiday) => {
+    const where = holiday.outlet_id ? outlets.find((o) => o.id === holiday.outlet_id)?.name || 'this outlet' : 'all outlets';
+    if (!confirm(`Delete "${holiday.name}" (${getHolidayDate(holiday)}) for ${where}? Attendance and payroll will treat that day as a normal working day.`)) return;
+    setHolidayLoading(true);
+    const { error } = await deleteHoliday(holiday.id);
+    setHolidayLoading(false);
+    if (error) return showToast('Failed to delete holiday: ' + error.message, 'error');
+    showToast('Holiday deleted', 'success');
     fetchHolidays();
   };
 
@@ -210,6 +269,8 @@ export default function SettingsPage() {
       shift_end: outlet?.shift_end ?? '',
       late_threshold: outlet?.late_threshold ?? '',
       weekly_off_days: outlet?.weekly_off_days ?? [],
+      weekly_off_per_employee: !!outlet?.weekly_off_per_employee,
+      holidays_enabled: outlet?.holidays_enabled ?? true,
     });
   }, [tenant, outlets, selectedOutletId]);
 
@@ -288,6 +349,8 @@ export default function SettingsPage() {
         shift_end: attForm.shift_end === '' ? null : attForm.shift_end,
         late_threshold: attForm.late_threshold === '' ? null : parseInt(attForm.late_threshold, 10),
         weekly_off_days: attForm.weekly_off_days.length > 0 ? [...attForm.weekly_off_days].sort() : null,
+        weekly_off_per_employee: attForm.weekly_off_per_employee,
+        holidays_enabled: attForm.holidays_enabled,
       } : {}),
     };
     const { error } = selectedOutletId
@@ -448,6 +511,12 @@ export default function SettingsPage() {
         show={showDepartmentModal}
         onClose={() => setShowDepartmentModal(false)}
         title="Add Department"
+        footer={<>
+          <button className="btn btn-outline" onClick={() => setShowDepartmentModal(false)}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSubmitDepartment} disabled={addLoading}>
+            {addLoading ? 'Adding…' : 'Add Department'}
+          </button>
+        </>}
       >
         <div className="form-group">
           <label className="form-label">Department name</label>
@@ -458,18 +527,18 @@ export default function SettingsPage() {
             placeholder="e.g. Sales"
           />
         </div>
-        <div className="modal-footer">
-          <button className="btn btn-outline" onClick={() => setShowDepartmentModal(false)}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSubmitDepartment} disabled={addLoading}>
-            {addLoading ? 'Adding…' : 'Add Department'}
-          </button>
-        </div>
       </Modal>
 
       <Modal
         show={showHolidayModal}
-        onClose={() => setShowHolidayModal(false)}
-        title="Add Holiday"
+        onClose={closeHolidayModal}
+        title={editingHolidayId ? 'Edit Holiday' : 'Add Holiday'}
+        footer={<>
+          <button className="btn btn-outline" onClick={closeHolidayModal}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSaveHoliday} disabled={holidayLoading}>
+            {holidayLoading ? 'Saving…' : 'Save Holiday'}
+          </button>
+        </>}
       >
         <div className="form-group">
           <label className="form-label">Holiday name</label>
@@ -496,18 +565,18 @@ export default function SettingsPage() {
             />
           </div>
         </div>
-        <div className="modal-footer">
-          <button className="btn btn-outline" onClick={() => setShowHolidayModal(false)}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleAddHoliday} disabled={holidayLoading}>
-            {holidayLoading ? 'Saving…' : 'Save Holiday'}
-          </button>
-        </div>
       </Modal>
 
       <Modal
         show={showShiftModal}
         onClose={() => setShowShiftModal(false)}
         title="Add Shift"
+        footer={<>
+          <button className="btn btn-outline" onClick={() => setShowShiftModal(false)}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSubmitShift} disabled={addLoading}>
+            {addLoading ? 'Adding…' : 'Add Shift'}
+          </button>
+        </>}
       >
         <div className="form-group">
           <label className="form-label">Shift name</label>
@@ -531,12 +600,6 @@ export default function SettingsPage() {
           </div>
         </div>
         <div className="form-hint">Leave end time earlier than start time for overnight shifts.</div>
-        <div className="modal-footer">
-          <button className="btn btn-outline" onClick={() => setShowShiftModal(false)}>Cancel</button>
-          <button className="btn btn-primary" onClick={handleSubmitShift} disabled={addLoading}>
-            {addLoading ? 'Adding…' : 'Add Shift'}
-          </button>
-        </div>
       </Modal>
 
       <Modal
@@ -579,7 +642,7 @@ export default function SettingsPage() {
         </div>
         <div className="form-hint">
           {tenant?.early_late_grace_minutes
-            ? `Late arrival / early left: arriving more than ${tenant.early_late_grace_minutes} min after shift start, or leaving more than ${tenant.early_late_grace_minutes} min before shift end, is graced once a calendar month (marked Present) when it stays within these limits; one or the other, never both on one day. Without the grace (later that month, late and early on one day, or past these limits: after "late-arrival allowance until" / before "early departure after") the hours decide: Half Day when under the full-day hours.`
+            ? `Late arrival / early left: arriving more than ${tenant.early_late_grace_minutes} min after shift start, or leaving more than ${tenant.early_left_minutes ?? tenant.early_late_grace_minutes} min before shift end, is graced once a calendar month (marked Present, or Late when an early left follows a late arrival) when it stays within these limits. Late and early on the same day is Half Day and uses no grace. Without the grace (later that month, or past these limits: after "late-arrival allowance until" / before "early departure after") the hours decide: Half Day when under the full-day hours.`
             : 'One clock-out before "early departure after" OR one clock-in after "late-arrival allowance until" is forgiven per calendar month; any further instance that month is marked Half Day. Leave either blank to turn that check off for this shift.'}
         </div>
       </Modal>
@@ -640,10 +703,12 @@ export default function SettingsPage() {
                 </div>
               </div>
               <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Pay Cycle Start Day</label>
-                  <input className="form-input" type="number" min="1" max="28" value={form.pay_day} onChange={(e) => setForm({ ...form, pay_day: e.target.value })} />
-                </div>
+                {!hrSupport && (
+                  <div className="form-group">
+                    <label className="form-label">Pay Cycle Start Day</label>
+                    <input className="form-input" type="number" min="1" max="28" value={form.pay_day} onChange={(e) => setForm({ ...form, pay_day: e.target.value })} />
+                  </div>
+                )}
                 <div className="form-group">
                   <label className="form-label">Working Days</label>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 14px' }}>
@@ -673,10 +738,12 @@ export default function SettingsPage() {
                   <div className="form-hint">Uncheck a day to mark it as a weekly off for this company (e.g. uncheck only Sunday for a 6-day work week). Drives attendance, calendars and comp off settlement (CTC ≥ ₹30,000).</div>
                 </div>
               </div>
-              <div className="form-group">
-                <label className="form-label">Currency Symbol</label>
-                <input className="form-input" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} />
-              </div>
+              {!hrSupport && (
+                <div className="form-group">
+                  <label className="form-label">Currency Symbol</label>
+                  <input className="form-input" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} />
+                </div>
+              )}
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Default Shift Start</label>
@@ -693,6 +760,7 @@ export default function SettingsPage() {
                 <div className="form-hint">Minutes after shift start before marking as Late</div>
               </div>
 
+              {!hrSupport && (
               <div className="form-group">
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
                   <input type="checkbox" checked={form.late_deduction_enabled}
@@ -732,6 +800,7 @@ export default function SettingsPage() {
                   </div>
                 )}
               </div>
+              )}
 
               <div className="form-group">
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
@@ -740,8 +809,10 @@ export default function SettingsPage() {
                   Sandwich Rule
                 </label>
                 <div className="form-hint">
-                  If an employee takes approved leave on both sides of a weekly off or public holiday, that
-                  off day in between also counts as leave (e.g. leave Sat + Sunday off + leave Mon = 3 leave days).
+                  A weekly off (each outlet's own, e.g. Delhi Monday) between two leave days counts as leave and
+                  takes a day off the balance (leave Sat + Sunday off + leave Mon = 3 leave days). Between two
+                  absent days it is unpaid too (absent Sat + Sun + Mon = 3 absent). A holiday is always paid:
+                  absent Thu + holiday Fri + absent Sat = 2 absent.
                 </div>
               </div>
 
@@ -885,6 +956,36 @@ export default function SettingsPage() {
                     </div>
                     <div className="form-hint">Overrides the company-wide working days just for this outlet. Leave every box unchecked to inherit the company default.</div>
                   </div>
+                  <div className="form-group" style={{ marginTop: 14 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={attForm.weekly_off_per_employee}
+                        onChange={(e) => setAttForm((f) => ({ ...f, weekly_off_per_employee: e.target.checked }))}
+                      />
+                      Each employee at {selectedOutletName} has their own weekly off
+                    </label>
+                    <div className="form-hint">
+                      When ticked, an employee's weekly off is the Weekly Holiday on their employee form, for
+                      attendance, comp off, overtime, the sandwich rule, payroll and reports. Employees set to
+                      Flexible use the outlet's weekly off days above (or the company default).
+                    </div>
+                  </div>
+                  <div className="form-group" style={{ marginTop: 14 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={!attForm.holidays_enabled}
+                        onChange={(e) => setAttForm((f) => ({ ...f, holidays_enabled: !e.target.checked }))}
+                      />
+                      No company-wide holidays at {selectedOutletName} — weekly off only
+                    </label>
+                    <div className="form-hint">
+                      When ticked, company-wide holidays don't apply to this outlet's staff: their calendars don't show
+                      them, and working on one is an ordinary working day with no comp-off. Holidays added under
+                      Holidays with this outlet picked still apply.
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -964,7 +1065,7 @@ export default function SettingsPage() {
             <div className="card-header">
               <h3>Holiday Calendar</h3>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                <button className="btn btn-sm btn-outline" onClick={() => setShowHolidayModal(true)}>
+                <button className="btn btn-sm btn-outline" onClick={openAddHoliday}>
                   <i className="fas fa-plus" /> Add Holiday
                 </button>
                 <button className="btn btn-primary btn-sm" onClick={importMajorIndianHolidays} disabled={importLoading}>
@@ -989,6 +1090,13 @@ export default function SettingsPage() {
                       ? `Showing company-wide holidays plus holidays specific to ${selectedOutletName}. New holidays added here apply only to ${selectedOutletName}.`
                       : 'Showing every company-wide holiday. New holidays added here apply to all outlets — pick a specific outlet above to add one just for that outlet.'}
                   </div>
+                  {selectedOutletId && outlets.find((o) => o.id === selectedOutletId)?.holidays_enabled === false && (
+                    <div className="form-hint" style={{ color: 'var(--warning)', fontWeight: 600 }}>
+                      <i className="fas fa-triangle-exclamation" style={{ marginRight: 6 }} />
+                      {selectedOutletName} observes no company-wide holidays, so only the holidays added for{' '}
+                      {selectedOutletName} itself apply to its staff. Change this under Attendance & Geofencing above.
+                    </div>
+                  )}
                 </div>
               )}
               <div className="settings-holiday-meta">
@@ -1056,9 +1164,12 @@ export default function SettingsPage() {
                             <button className="btn btn-danger btn-sm" onClick={() => handleUpdateHolidayStatus(holiday.id, 'Rejected')} disabled={holidayLoading}>Reject</button>
                           </>
                         )}
-                        {holiday.status !== 'Pending' && (
-                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Updated</span>
-                        )}
+                        <button className="btn btn-outline btn-sm" onClick={() => openEditHoliday(holiday)} disabled={holidayLoading}>
+                          <i className="fas fa-pen" /> Edit
+                        </button>
+                        <button className="btn btn-outline btn-sm" style={{ color: 'var(--danger)' }} onClick={() => handleDeleteHoliday(holiday)} disabled={holidayLoading}>
+                          <i className="fas fa-trash" /> Delete
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -1276,7 +1387,7 @@ export default function SettingsPage() {
           )}
 
           {/* ── Task notification channels (Slack / email / WhatsApp) ─────────── */}
-          {['admin', 'superadmin'].includes(profile?.role) && <NotificationChannelsCard tenantId={tenant?.id} />}
+          {['admin', 'superadmin'].includes(profile?.role) && isEnabled('tasks') && isEnabled('task_reminders') && <NotificationChannelsCard tenantId={tenant?.id} />}
 
         </div>
       </div>

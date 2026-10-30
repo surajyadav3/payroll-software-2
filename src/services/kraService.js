@@ -1,8 +1,8 @@
 import { supabase } from '@/lib/supabase';
 
 // Legacy KRA table, still written by the mobile app. The web Performance
-// workspace uses the pms_* RPCs (pmsService); this read only feeds the
-// dashboard's recent-activity list.
+// screen (src/crew/pages/performance) has its own goals and KPIs; this read
+// only feeds the dashboard's recent-activity list.
 
 /** List KRAs visible to the caller: their own, company-wide, or (for admin/manager) everyone's. */
 export async function listKras(tenantId, { profileId = null } = {}) {

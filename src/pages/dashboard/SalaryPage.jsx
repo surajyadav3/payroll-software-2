@@ -6,7 +6,8 @@ import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { listComponents, saveComponent, deleteComponent } from '@/services/salaryService';
 import { updateTenant } from '@/services/tenantService';
-import { fmt, calcSalary } from '@/lib/helpers';
+import { fmt, calcSalary, isRaniwalaTenant } from '@/lib/helpers';
+import RaniwalaStructureGuide from '@/components/payroll/RaniwalaStructureGuide';
 
 // PF is a per-employee toggle (Employees page) but the *formula* — wage
 // ceiling and contribution rate — is a tenant-wide policy. Defaults match
@@ -81,7 +82,8 @@ export default function SalaryStructurePage() {
   const [form, setForm]             = useState({ name: '', category: 'earning', calc_type: 'percent_ctc', percent: '', fixed: '', formula: '', depends_on: '' });
 
   const fetchComponents = useCallback(async () => {
-    if (!tenant) return;
+    // Raniwala's page shows the fixed rules, not components — nothing to load.
+    if (!tenant || isRaniwalaTenant(tenant)) return;
     setLoading(true);
     try {
       const { data, error } = await listComponents(tenant.id);
@@ -125,6 +127,17 @@ export default function SalaryStructurePage() {
     showToast('Deleted', 'success');
     fetchComponents();
   };
+
+  // Raniwala's structure is fixed rules on the gross salary (lib/raniwalaPayroll.js),
+  // so there are no components to configure — the page explains the rules instead.
+  if (isRaniwalaTenant(tenant)) {
+    return (
+      <>
+        <Header title="Salary Structure" breadcrumb="How every salary is worked out from the gross" />
+        <div className="page-content"><RaniwalaStructureGuide /></div>
+      </>
+    );
+  }
 
   const previewSalary = calcSalary(30000, components, tenant?.work_days || 30, tenant?.work_days || 30);
 

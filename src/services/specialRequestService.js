@@ -14,7 +14,7 @@ export async function listAllSpecialRequests(tenantId) {
     .from('special_requests')
     .select(`
       *,
-      profile:profiles!special_requests_profile_id_fkey(first_name, middle_name, last_name, department, ctc),
+      profile:profiles!special_requests_profile_id_fkey(first_name, middle_name, last_name, department, ctc, employee_id),
       approver:profile_directory!special_requests_approved_by_fkey(first_name, middle_name, last_name)
     `)
     .eq('tenant_id', tenantId)

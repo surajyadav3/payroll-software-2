@@ -2,7 +2,7 @@
 // Run: node --test tests/unit
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDayRows, buildRegister, buildAbsenteeGrid, raniwalaDayStatus, dayTypeFor, MAX_ABSENCE_DAYS } from '../../src/lib/attendanceRegister.js';
+import { buildDayRows, buildRegister, buildAbsenteeGrid, raniwalaDayStatus, dayTypeFor, registerOutletScope, MAX_ABSENCE_DAYS } from '../../src/lib/attendanceRegister.js';
 
 const punches = (...times) => times.map((t, i) => ({ punch_time: t, punch_type: i === 0 ? 'in' : 'out' }));
 const rec = (status, total_hours, ...times) => ({ status, total_hours, punches: punches(...times) });
@@ -209,4 +209,55 @@ test('register: sandwich rule — a weekly off between two absent days is A, a h
   const grid = buildAbsenteeGrid({ entries, tenant: sandwichTenant, outlets, ...args });
   assert.equal(grid.rows[0].cells['2026-10-11'].code, 'A');
   assert.equal(grid.rows[0].cells['2026-10-11'].absent, true);
+});
+
+test('register outlet scope: Factory alone; Office takes every non-factory outlet', () => {
+  const named = [
+    { id: 'office', name: 'Office Staff' }, { id: 'factory', name: 'Factory Staff' },
+    { id: 'delhi', name: 'Delhi Experience Centre' }, { id: 'gurugram', name: 'Gurugram' }, { id: 'b2b', name: 'B2B SALES' },
+  ];
+  const staff = ['office', 'factory', 'delhi', 'gurugram', 'b2b', null].map((o, i) => emp({ id: `e${i}`, outlet_id: o }));
+  const ids = (scope) => scope.employees.map((e) => e.id);
+  const factory = registerOutletScope({ employees: staff, outlets: named, selectedOutletId: 'factory' });
+  assert.deepEqual(ids(factory), ['e1']);
+  assert.deepEqual(factory.outletNames, ['Factory Staff']);
+  const office = registerOutletScope({ employees: staff, outlets: named, selectedOutletId: 'office' });
+  assert.deepEqual(ids(office), ['e0', 'e2', 'e3', 'e4', 'e5']);
+  assert.deepEqual(office.outletNames, ['Office Staff', 'Delhi Experience Centre', 'Gurugram', 'B2B SALES']);
+  // Any other outlet, or Combined: the usual outlet scope.
+  assert.equal(registerOutletScope({ employees: staff, outlets: named, selectedOutletId: 'delhi' }), null);
+  assert.equal(registerOutletScope({ employees: staff, outlets: named, selectedOutletId: null }), null);
+});
+
+test('register Total Present counts Present, Late, Half Day, Short Fall and Mispunch, not Absent / Leave', () => {
+  const entries = build({
+    leaves: [{ profile_id: 'e1', status: 'Approved', start_date: '2026-10-09', end_date: '2026-10-09' }],
+    attByProfile: { e1: {
+      '2026-10-05': rec('Late', 8, '11:00', '19:00'),
+      '2026-10-06': rec('Absent', 2, '10:00', '12:00'),
+      '2026-10-07': rec('Mispunch', 0, '10:05'),
+      '2026-10-08': rec('Half Day', 5, '10:00', '15:00'),
+    } },
+  });
+  const [row] = buildRegister({ entries, tenant, outlets, fromDate: '2026-10-05', toDate: '2026-10-09', today: '2026-10-10' }).rows;
+  assert.deepEqual(row.cells.map((c) => c.code), ['Late', 'SF', 'MP', 'HF', 'L']);
+  assert.equal(row.presentDays, 4);
+});
+
+test('weekly off per employee (Gurgaon): own Weekly Holiday, Flexible falls back, register marks WO', () => {
+  const gurgaon = { id: 'gurgaon', weekly_off_days: null, weekly_off_per_employee: true, holidays_enabled: false };
+  const type = (weekly_holiday, date) => dayTypeFor({
+    emp: emp({ outlet_id: 'gurgaon', weekly_holiday }), outlet: gurgaon, tenant, date,
+  });
+  assert.equal(type('Wednesday', '2026-10-07'), 'Weekly off');
+  assert.equal(type('Wednesday', '2026-10-11'), 'Working day');
+  assert.equal(type('Flexible', '2026-10-11'), 'Weekly off');
+  // The flag is off elsewhere: an office profile saying Monday still uses Sunday.
+  assert.equal(dayTypeFor({ emp: emp({ weekly_holiday: 'Monday' }), outlet: outlets[0], tenant, date: '2026-10-05' }), 'Working day');
+
+  const { rows } = buildRegister({
+    entries: [{ emp: emp({ outlet_id: 'gurgaon', weekly_holiday: 'Monday' }), rows: [] }],
+    tenant, outlets: [gurgaon], fromDate: '2026-10-04', toDate: '2026-10-05', today: '2026-10-22',
+  });
+  assert.deepEqual(rows[0].cells.map((c) => c.code), ['', 'WO']);
 });

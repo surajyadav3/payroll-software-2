@@ -61,7 +61,8 @@ async function fetchAllPages(build, pageSize = 1000) {
  * Everything the My Team page needs for one month, in one round of parallel
  * queries: the team (from the directory), their contact details, the month's
  * attendance, leaves (approved + pending, so upcoming leave shows before it's
- * approved), approved WFH, holidays and outlets (for weekly offs). RLS
+ * approved), approved WFH, holidays and outlets (for weekly offs and the
+ * outlets that observe no holidays). RLS
  * scopes every table to the caller's team at Raniwala.
  */
 export async function fetchTeamMonth(tenantId, meId, year, month) {
@@ -81,18 +82,18 @@ export async function fetchTeamMonth(tenantId, meId, year, month) {
   }
 
   const [details, attendance, leaves, wfh, holidays, outlets] = await Promise.all([
-    supabase.from('profiles').select('id, phone, join_date').in('id', ids),
+    supabase.from('profiles').select('id, phone, join_date, weekly_holiday').in('id', ids),
     fetchAllPages(() => supabase.from('attendance').select('profile_id, date, status')
       .in('profile_id', ids).gte('date', first).lte('date', last).order('date')),
     supabase.from('leave_requests')
-      .select('id, profile_id, leave_type, start_date, end_date, status, current_stage, duration_days')
+      .select('id, profile_id, leave_type, start_date, end_date, status, current_stage, duration_days, half_day, half_day_from, half_day_to')
       .in('profile_id', ids).in('status', ['Pending', 'Approved'])
       .lte('start_date', last)
       .gte('end_date', first),
     supabase.from('wfh_requests').select('profile_id, from_date, to_date').in('profile_id', ids).eq('status', 'Approved')
       .lte('from_date', last).gte('to_date', first),
     supabase.from('holidays').select('date, name, outlet_id').eq('tenant_id', tenantId).gte('date', first).lte('date', last),
-    supabase.from('outlets').select('id, name, weekly_off_days, holidays_enabled').eq('tenant_id', tenantId),
+    supabase.from('outlets').select('id, name, weekly_off_days, weekly_off_per_employee, holidays_enabled').eq('tenant_id', tenantId),
   ]);
 
   return {

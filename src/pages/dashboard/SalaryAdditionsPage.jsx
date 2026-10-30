@@ -50,7 +50,7 @@ export default function SalaryAdditionsPage() {
   const handleSave = async () => {
     if (!form.profile_id) return showToast('Select an employee', 'error');
     if (!form.amount) return showToast('Enter an amount', 'error');
-    const { error } = await createSalaryAddition(tenant.id, tenant.id, form);
+    const { error } = await createSalaryAddition(tenant.id, profile.id, form);
     if (error) return showToast('Failed: ' + error.message, 'error');
     showToast('Added — will apply on the next payroll run for that month', 'success');
     setShowModal(false);

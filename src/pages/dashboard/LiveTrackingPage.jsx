@@ -1,13 +1,14 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { MapContainer, TileLayer, Polyline, CircleMarker, Tooltip } from 'react-leaflet';
+import { MapContainer, TileLayer, Polyline, CircleMarker, Tooltip, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import {
   listTenantEmployeesWithTrackingState, setEmployeeTracking, listPingsForEmployeeDate, listLastPings, getTrackedAttendanceDay,
+  listAttendanceStatusForDate,
 } from '@/services/trackingService';
-import { fullName, todayStr, timeAgo, fmtDuration, distanceMeters, isRaniwalaTenant } from '@/lib/helpers';
+import { fullName, todayStr, timeAgo, fmtDuration, distanceMeters, isRaniwalaTenant, isTenantWeeklyOff } from '@/lib/helpers';
 
 // A pair of consecutive pings closer together than this counts as "standing"
 // for that time gap rather than "moving" — GPS drift alone is usually a few
@@ -134,9 +135,49 @@ const REFRESH_MS = 60000;
 function liveStatus(lastPing) {
   if (!lastPing) return null;
   const age = Date.now() - new Date(lastPing.recorded_at).getTime();
-  if (age <= LIVE_WITHIN_MS) return { label: 'Live', color: 'var(--success)' };
-  if (age <= DELAYED_WITHIN_MS) return { label: 'Delayed', color: 'var(--warning)' };
-  return { label: 'Offline', color: 'var(--text-muted)' };
+  // mapColor: Leaflet writes colours as SVG attributes, which can't read CSS vars.
+  if (age <= LIVE_WITHIN_MS) return { label: 'Live', color: 'var(--success)', mapColor: '#10B981' };
+  if (age <= DELAYED_WITHIN_MS) return { label: 'Delayed', color: 'var(--warning)', mapColor: '#F59E0B' };
+  return { label: 'Offline', color: 'var(--text-muted)', mapColor: '#94A3B8' };
+}
+
+// Fits the team map to everyone's position — on first load and when someone
+// appears / disappears, not on every minute's refresh, so a zoom the viewer
+// chose isn't thrown away while they're looking.
+function FitToPoints({ points, fitKey }) {
+  const map = useMap();
+  useEffect(() => {
+    if (points.length === 1) map.setView(points[0], 14);
+    else if (points.length > 1) map.fitBounds(points, { padding: [40, 40], maxZoom: 14 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, fitKey]);
+  return null;
+}
+
+// Today's Present / Absent for the Employees table, from the attendance row
+// (same status → colour grouping as the Attendance page). No row: weekly off
+// if it is one for the employee's outlet / tenant, otherwise Absent.
+const PRESENT_STATUSES = ['Present', 'Late', 'Half Day', 'Travel', 'Show Visit', 'Mispunch'];
+
+function todayStatus(att, tenant, outlet, employee) {
+  if (!att) {
+    return isTenantWeeklyOff(new Date(), tenant, outlet, employee)
+      ? { label: 'Weekly Off', cls: 'badge-info' }
+      : { label: 'Absent', cls: 'badge-danger' };
+  }
+  const status = att.status || 'Present';
+  const punches = [...(att.punches || [])].sort((a, b) => a.punch_time.localeCompare(b.punch_time));
+  const ins = punches.filter((p) => p.punch_type === 'in');
+  const outs = punches.filter((p) => p.punch_type === 'out');
+  const clockIn = ins[0]?.punch_time || null;
+  const clockOut = outs.length > 0 && outs.length >= ins.length ? outs[outs.length - 1].punch_time : null;
+  if (PRESENT_STATUSES.includes(status)) {
+    return { label: 'Present', cls: 'badge-success', detail: status === 'Present' ? null : status, clockIn, clockOut };
+  }
+  if (status === 'Absent') return { label: 'Absent', cls: 'badge-danger' };
+  if (status === 'Leave') return { label: 'On Leave', cls: 'badge-purple' };
+  if (status === 'Comp Off') return { label: 'Comp Off', cls: 'badge-purple' };
+  return { label: status, cls: 'badge-warning', clockIn, clockOut }; // Pending Approval
 }
 
 const mapsLink = (p) => `https://www.google.com/maps?q=${p.lat},${p.lng}`;
@@ -154,6 +195,7 @@ export default function LiveTrackingPage() {
   const [pings, setPings] = useState([]);
   const [pingsLoading, setPingsLoading] = useState(false);
   const [attendance, setAttendance] = useState(null);
+  const [todayAtt, setTodayAtt] = useState(() => new Map()); // profile_id → today's attendance row
 
   const raniwala = isRaniwalaTenant(tenant);
   // Raniwala only wants Live Tracking scoped to their B2B Sales outlet
@@ -167,13 +209,27 @@ export default function LiveTrackingPage() {
   const load = useCallback(() => {
     if (!tenant?.id) return;
     setLoading(true);
-    listTenantEmployeesWithTrackingState(tenant.id).then(({ data }) => {
+    listTenantEmployeesWithTrackingState(tenant.id).then(({ data, error }) => {
+      if (error) showToast('Could not load employees: ' + error.message, 'error');
       setEmployees(data || []);
       setLoading(false);
     });
   }, [tenant?.id]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Today's Present / Absent for just the listed employees (one query),
+  // re-read by the live refresh below.
+  const visibleIdsKey = visibleEmployees.map((e) => e.id).join(',');
+  const loadTodayAttendance = useCallback(() => {
+    if (!tenant?.id) return;
+    const ids = visibleIdsKey ? visibleIdsKey.split(',') : [];
+    listAttendanceStatusForDate(tenant.id, ids, todayStr()).then(({ data }) => {
+      setTodayAtt(new Map(data.map((a) => [a.profile_id, a])));
+    });
+  }, [tenant?.id, visibleIdsKey]);
+
+  useEffect(() => { loadTodayAttendance(); }, [loadTodayAttendance]);
 
   useEffect(() => {
     if (!selectedId || !tenant?.id) { setPings([]); setAttendance(null); return; }
@@ -199,6 +255,7 @@ export default function LiveTrackingPage() {
         const byEmployee = new Map(data.map((p) => [p.employee_id, p]));
         setEmployees((prev) => prev.map((e) => ({ ...e, last_ping: byEmployee.get(e.id) || e.last_ping })));
       });
+      loadTodayAttendance();
       if (selectedId && date === todayStr()) {
         listPingsForEmployeeDate(tenant.id, selectedId, date).then(({ data }) => setPings(data || []));
         getTrackedAttendanceDay(tenant.id, selectedId, date).then(({ data }) => setAttendance(data || null));
@@ -207,7 +264,7 @@ export default function LiveTrackingPage() {
     const id = setInterval(tick, REFRESH_MS);
     document.addEventListener('visibilitychange', tick);
     return () => { clearInterval(id); document.removeEventListener('visibilitychange', tick); };
-  }, [tenant?.id, selectedId, date]);
+  }, [tenant?.id, selectedId, date, loadTodayAttendance]);
 
   const handleToggle = async (emp) => {
     setSavingId(emp.id);
@@ -225,6 +282,10 @@ export default function LiveTrackingPage() {
   const day = useMemo(() => summarizeAttendance(attendance, date), [attendance, date]);
   const routePositions = useMemo(() => track.map((p) => [p.lat, p.lng]), [track]);
   const mapCenter = routePositions[0] || [20.5937, 78.9629]; // falls back to India's centroid when there's no track yet
+  // Everyone listed who has ever sent a position, for the team map.
+  const teamOnMap = visibleEmployees.filter((e) => e.last_ping && validPoint(e.last_ping.lat, e.last_ping.lng));
+  const teamPoints = teamOnMap.map((e) => [e.last_ping.lat, e.last_ping.lng]);
+  const teamLive = teamOnMap.filter((e) => liveStatus(e.last_ping).label === 'Live').length;
 
   return (
     <>
@@ -244,14 +305,63 @@ export default function LiveTrackingPage() {
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading…</div>
         ) : (
           <>
+            {raniwala && (
+              <div className="card" style={{ marginBottom: 20 }}>
+                <div className="card-header" style={{ flexWrap: 'wrap', gap: 12 }}>
+                  <h3>B2B Sales Team — Live Location</h3>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+                    {teamLive} live now · {teamOnMap.length} of {visibleEmployees.length} on the map · refreshes every minute
+                  </span>
+                </div>
+                <div style={{ padding: 16 }}>
+                  {teamOnMap.length === 0 ? (
+                    <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>No one in the team has sent a location yet.</div>
+                  ) : (
+                    <>
+                      <MapContainer center={teamPoints[0]} zoom={5} style={{ height: 420, borderRadius: 10 }} scrollWheelZoom>
+                        <TileLayer
+                          attribution='&copy; OpenStreetMap contributors'
+                          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                        />
+                        <FitToPoints points={teamPoints} fitKey={teamOnMap.map((e) => e.id).join(',')} />
+                        {teamOnMap.map((e) => {
+                          const status = liveStatus(e.last_ping);
+                          return (
+                            <CircleMarker
+                              key={e.id}
+                              center={[e.last_ping.lat, e.last_ping.lng]}
+                              radius={selectedId === e.id ? 10 : 8}
+                              pathOptions={{ color: '#fff', weight: 2, fillColor: status.mapColor, fillOpacity: 1 }}
+                              eventHandlers={{ click: () => setSelectedId(e.id) }}
+                            >
+                              <Tooltip permanent direction="top" offset={[0, -6]}>
+                                {fullName(e)} · {status.label === 'Live' ? 'Live' : timeAgo(e.last_ping.recorded_at)}
+                              </Tooltip>
+                            </CircleMarker>
+                          );
+                        })}
+                      </MapContainer>
+                      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 10, fontSize: 12, color: 'var(--text-muted)' }}>
+                        <span><i className="fas fa-circle" style={{ color: '#10B981', marginRight: 4 }} />Live (last 7 min)</span>
+                        <span><i className="fas fa-circle" style={{ color: '#F59E0B', marginRight: 4 }} />Delayed (7–20 min)</span>
+                        <span><i className="fas fa-circle" style={{ color: '#94A3B8', marginRight: 4 }} />Offline / last known position</span>
+                        <span>Click a dot to see that person's track below.</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="card" style={{ marginBottom: 20 }}>
               <div className="card-header"><h3>Employees</h3></div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Employee</th><th>Outlet</th><th>Tracking</th><th>Last Seen</th><th>Current Location</th><th></th></tr></thead>
+                  <thead><tr><th>Employee</th><th>Outlet</th><th>Tracking</th><th>Today</th><th>Current Location</th><th></th></tr></thead>
                   <tbody>
                     {visibleEmployees.map((e) => {
                       const status = liveStatus(e.last_ping);
+                      const today = todayStatus(todayAtt.get(e.id), tenant, e.outlets, e);
                       return (
                       <tr key={e.id} style={selectedId === e.id ? { background: 'var(--surface-hover)' } : undefined}>
                         <td>{fullName(e)}</td>
@@ -267,19 +377,26 @@ export default function LiveTrackingPage() {
                           </button>
                         </td>
                         <td>
-                          {status ? (
+                          <span className={`badge ${today.cls}`}>{today.label}</span>
+                          {today.detail && <span style={{ color: 'var(--text-muted)', fontSize: 12 }}> · {today.detail}</span>}
+                          {today.clockIn && (
+                            <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 2 }}>
+                              In {fmtPunch(today.clockIn)}{today.clockOut ? ` · Out ${fmtPunch(today.clockOut)}` : ''}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          {e.last_ping ? (
                             <>
                               <i className="fas fa-circle" style={{ fontSize: 8, color: status.color, marginRight: 6 }} />
                               <span style={{ color: status.color, fontWeight: 600 }}>{status.label}</span>
                               <span style={{ color: 'var(--text-muted)' }}> · {timeAgo(e.last_ping.recorded_at)}</span>
+                              <div style={{ fontSize: 12, marginTop: 2 }}>
+                                <a href={mapsLink(e.last_ping)} target="_blank" rel="noreferrer" title="Open latest position in Google Maps">
+                                  <i className="fas fa-location-dot" /> Open in Maps
+                                </a>
+                              </div>
                             </>
-                          ) : '—'}
-                        </td>
-                        <td>
-                          {e.last_ping ? (
-                            <a href={mapsLink(e.last_ping)} target="_blank" rel="noreferrer" title="Open latest position in Google Maps">
-                              <i className="fas fa-location-dot" /> Open in Maps
-                            </a>
                           ) : '—'}
                         </td>
                         <td>

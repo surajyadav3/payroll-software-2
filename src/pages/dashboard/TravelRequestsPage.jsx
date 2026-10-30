@@ -2,12 +2,15 @@ import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
+import BulkApproveBar, { BulkHeadCell, BulkRowCell } from '@/components/BulkApproveBar';
+import { useBulkApproval } from '@/hooks/useBulkApproval';
 import { useAuth } from '@/context/AuthContext';
 import {
   listMyTravelRequests, listTenantTravelRequests, createTravelRequest,
   updateTravelRequestStatus, deleteTravelRequest, TRAVEL_MODES,
 } from '@/services/travelService';
 import { fmt, fullName, todayStr } from '@/lib/helpers';
+import { exportRequestSheet, fmtExportDateTime } from '@/lib/requestExport';
 
 const STATUS_BADGE = { Pending: 'badge-warning', Approved: 'badge-success', Rejected: 'badge-danger' };
 
@@ -56,12 +59,45 @@ export default function TravelRequestsPage() {
     fetchData();
   };
 
+  const bulk = useBulkApproval({
+    rows,
+    loading,
+    canAct: (r) => canManage && r.status === 'Pending',
+    noun: 'travel request',
+    onDone: fetchData,
+    decide: (r, approve) => updateTravelRequestStatus(r.id, approve ? 'Approved' : 'Rejected', profile.id),
+  });
+
+  const exportList = () => {
+    exportRequestSheet(rows.map((r) => ({
+      ...(canManage ? {
+        'Emp Code': r.profile?.employee_id || '',
+        Employee: fullName(r.profile),
+        Department: r.profile?.department || '',
+      } : {}),
+      Purpose: r.purpose || '',
+      From: fmt.date(r.from_date),
+      To: fmt.date(r.to_date),
+      Legs: (r.legs || []).map((l) => `${l.from_city} → ${l.to_city} (${l.mode}, ${fmt.date(l.travel_date)})`).join('; '),
+      'Est. Cost': Number(r.estimated_cost) || 0,
+      Status: r.status,
+      'Submitted On': fmtExportDateTime(r.created_at),
+    })), {
+      sheet: 'Travel Requests',
+      file: 'travel requests',
+      widths: [...(canManage ? [10, 24, 18] : []), 30, 13, 13, 50, 12, 10, 22],
+    });
+  };
+
   return (
     <>
       <Header title="Travel Requests" breadcrumb="Pre-trip approval with cost estimate and itinerary" />
       <div className="page-content">
         <div className="filter-bar">
-          <div style={{ marginLeft: 'auto' }}>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            <button className="btn btn-outline" onClick={exportList} disabled={loading || rows.length === 0}>
+              <i className="fas fa-file-excel" style={{ marginRight: 6 }} />Export
+            </button>
             <button className="btn btn-primary" onClick={() => setShowModal(true)}><i className="fas fa-plus" /> New Request</button>
           </div>
         </div>
@@ -70,14 +106,16 @@ export default function TravelRequestsPage() {
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}><div className="spinner" style={{ margin: '0 auto 16px' }} />Loading…</div>
         ) : (
           <div className="card">
+            <BulkApproveBar bulk={bulk} />
             <div className="table-wrap">
               <table>
-                <thead><tr>{canManage && <th>Employee</th>}<th>Purpose</th><th>Dates</th><th>Legs</th><th>Est. Cost</th><th>Status</th><th>Actions</th></tr></thead>
+                <thead><tr><BulkHeadCell bulk={bulk} />{canManage && <th>Employee</th>}<th>Purpose</th><th>Dates</th><th>Legs</th><th>Est. Cost</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody>
                   {rows.length === 0 ? (
                     <tr><td colSpan={canManage ? 7 : 6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>No travel requests yet</td></tr>
                   ) : rows.map((r) => (
                     <tr key={r.id}>
+                      <BulkRowCell bulk={bulk} row={r} />
                       {canManage && <td>{fullName(r.profile)}</td>}
                       <td>{r.purpose}</td>
                       <td>{fmt.date(r.from_date)} – {fmt.date(r.to_date)}</td>
@@ -86,8 +124,8 @@ export default function TravelRequestsPage() {
                       <td><span className={`badge ${STATUS_BADGE[r.status]}`}>{r.status}</span></td>
                       <td>
                         {canManage && r.status === 'Pending' && <>
-                          <button className="btn btn-outline btn-sm" onClick={() => setStatus(r.id, 'Approved')}>Approve</button>{' '}
-                          <button className="btn btn-outline btn-sm" style={{ color: 'var(--danger)' }} onClick={() => setStatus(r.id, 'Rejected')}>Reject</button>
+                          <button className="btn btn-outline btn-sm" disabled={bulk.busy} onClick={() => setStatus(r.id, 'Approved')}>Approve</button>{' '}
+                          <button className="btn btn-outline btn-sm" style={{ color: 'var(--danger)' }} disabled={bulk.busy} onClick={() => setStatus(r.id, 'Rejected')}>Reject</button>
                         </>}
                         {!canManage && r.status === 'Pending' && (
                           <button className="btn btn-outline btn-sm" style={{ color: 'var(--danger)' }} onClick={async () => { await deleteTravelRequest(r.id); fetchData(); }}>Withdraw</button>

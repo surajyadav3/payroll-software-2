@@ -72,17 +72,31 @@ export async function deleteMeetingNotes(id) {
   return { error };
 }
 
-/** Creates one task from a reviewed action item; returns the new task id. */
+export const TASK_PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'];
+
+/** People the caller may give a task to (self + reporting tree; everyone for HR). */
+export async function listAssignablePeople() {
+  const { data, error } = await supabase.rpc('task_assignable_people');
+  return { data: data || [], error };
+}
+
+/**
+ * Creates one task from a reviewed action item; returns the new task id. Goes through the task
+ * register (work_api), so it gets a number, the assignee is notified and the usual rules apply.
+ */
 export async function createTaskFromActionItem(tenantId, item, meetingTitle) {
   const description = [item.description, `From meeting: ${meetingTitle}`].filter(Boolean).join('\n\n');
-  const { data, error } = await supabase.from('project_tasks').insert([{
-    tenant_id: tenantId,
-    title: item.title.trim().slice(0, 200),
-    description,
-    assigned_to: item.assignee_id || null,
-    priority: item.priority || 'Medium',
-    due_date: item.due_date || null,
-    source: 'ai',
-  }]).select('id').single();
+  const { data, error } = await supabase.rpc('work_api', {
+    p_method: 'POST',
+    p_path: '/work/tasks',
+    p_query: {},
+    p_body: {
+      title: item.title.trim().slice(0, 250),
+      description,
+      ...(item.assignee_id ? { assigneeEmployeeId: item.assignee_id } : {}),
+      priority: String(item.priority || 'Medium').toLowerCase(),
+      dueDate: item.due_date || null,
+    },
+  });
   return { id: data?.id || null, error };
 }

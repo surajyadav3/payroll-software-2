@@ -21,11 +21,23 @@ import {
   listProfileOutletAccess, setProfileOutletAccess,
 } from '@/services/tenantService';
 import { supabase } from '@/lib/supabase';
-import { fmt, getInitials, getAvatarColor, todayStr, fullName, resolveEmployeeCredentials, isRaniwalaTenant } from '@/lib/helpers';
+import { fmt, getInitials, getAvatarColor, todayStr, fullName, resolveEmployeeCredentials, isRaniwalaTenant, isHrSupport } from '@/lib/helpers';
 import { parseImportFile, runBulkImport, downloadSampleCSV, resolveLoginEmail, isValidEmail } from '@/lib/employeeImport';
 import { startProcess as startOnboardingProcess } from '@/services/onboardingService';
 import { advanceReferralStage } from '@/services/hiringService';
 import { lookupEsslCode, refreshEsslFromMachine, splitMachineName } from '@/services/esslService';
+import { withSalaries, setEmployeeSalary } from '@/services/employeeSalaryService';
+import { listLeaveTypes, allocateLeave } from '@/services/leaveLedgerService';
+import { listL1Assignments, setEmployeeL1 } from '@/services/l1Service';
+import SalaryHistoryModal from '@/components/payroll/SalaryHistoryModal';
+
+// Salary-private tenant (Raniwala): HR types both the gross and the CTC; the
+// CTC is never worked out from the gross. A box left as it was opened is sent
+// as null (keep what is stored); only a box the user emptied clears it.
+const salaryField = (value, original) => {
+  if (value !== '' && value != null) return parseFloat(value) || 0;
+  return original !== '' && original != null ? 0 : null;
+};
 
 function buildNewEmployeeId(currentId, destLocationCode) {
   if (!currentId || currentId.length < 4) return currentId || '';
@@ -453,6 +465,216 @@ function BulkAssignOutletModal({ show, onClose, tenantId, outlets, transferredBy
   );
 }
 
+// ── L1 SPOCs (Raniwala) ─────────────────────────────────────────────────────
+// Who is whose L1 (profiles.l1_spoc_id, 20261024_1), and moving people from
+// one L1 to another. Left: the L1s; right: the picked L1's people, tick and
+// move. New links are set on the Add / Edit Employee form.
+function L1Avatar({ p, size = 34 }) {
+  return (
+    <div className="emp-avatar" style={{ width: size, height: size, flexShrink: 0, background: `linear-gradient(135deg, ${getAvatarColor(p.id)})` }}>
+      {getInitials(p.first_name, p.last_name)}
+    </div>
+  );
+}
+
+function L1SpocModal({ show, onClose, tenantId, employees, onChanged }) {
+  const [members,  setMembers]  = useState([]);
+  const [l1s,      setL1s]      = useState([]);
+  const [loading,  setLoading]  = useState(false);
+  const [saving,   setSaving]   = useState(false);
+  const [activeId, setActiveId] = useState(null);
+  const [ticked,   setTicked]   = useState(new Set());
+  const [moveTo,   setMoveTo]   = useState('');
+  const [search,   setSearch]   = useState('');
+
+  const load = useCallback(async () => {
+    if (!tenantId) return;
+    setLoading(true);
+    const { members: m, l1s: l, error } = await listL1Assignments(tenantId);
+    if (error) showToast('Could not load L1s: ' + error.message, 'error');
+    setMembers(m);
+    setL1s(l);
+    setLoading(false);
+  }, [tenantId]);
+
+  useEffect(() => { if (show) { setSearch(''); load(); } }, [show, load]);
+
+  const peopleOf = (id) => members.filter((m) => m.l1_spoc_id === id);
+  const q = search.trim().toLowerCase();
+  const hit = (p) => !q || `${fullName(p)} ${p.employee_id || ''}`.toLowerCase().includes(q);
+  // An L1 stays listed when the search matches them or anyone under them.
+  const shownL1s = l1s.filter((l) => hit(l) || peopleOf(l.id).some(hit));
+  const active = shownL1s.find((l) => l.id === activeId) || shownL1s[0] || null;
+  const activePeople = active ? peopleOf(active.id).filter((p) => hit(active) || hit(p)) : [];
+
+  // Changing L1 or search starts a fresh selection.
+  useEffect(() => { setTicked(new Set()); setMoveTo(''); }, [active?.id, search]);
+
+  const l1Ids = new Set(l1s.map((l) => l.id));
+  const tickedIds = [...ticked];
+  const allTicked = activePeople.length > 0 && activePeople.every((p) => ticked.has(p.id));
+  const toggle = (id) => setTicked((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const move = async () => {
+    if (!tickedIds.length || !moveTo) return;
+    const target = moveTo === '__none__' ? null : moveTo;
+    setSaving(true);
+    const { error } = await setEmployeeL1(tickedIds, target);
+    setSaving(false);
+    if (error) return showToast('Could not change the L1: ' + error.message, 'error');
+    const to = target ? [...l1s, ...employees].find((p) => p.id === target) : null;
+    const who = tickedIds.length === 1 ? '1 employee' : `${tickedIds.length} employees`;
+    showToast(to ? `${who} moved to ${fullName(to)}` : `L1 removed for ${who}`, 'success');
+    setTicked(new Set());
+    setMoveTo('');
+    load();
+    onChanged?.();
+  };
+
+  const sub = (p) => [p.designation, p.department].filter(Boolean).join(' · ') || '—';
+
+  return (
+    <Modal show={show} onClose={onClose} title="L1 SPOCs" width="920px"
+      footer={<button className="btn btn-outline" onClick={onClose}>Close</button>}
+    >
+      {loading && !l1s.length ? (
+        <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>
+          <div className="spinner" style={{ margin: '0 auto 12px' }} />Loading L1s…
+        </div>
+      ) : l1s.length === 0 ? (
+        <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+          <i className="fas fa-user-friends" style={{ fontSize: 24, marginBottom: 10, display: 'block' }} />
+          No L1s yet. Pick an L1 SPOC on an employee's Add / Edit Employee form.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <span className="badge badge-info">{l1s.length} L1{l1s.length === 1 ? '' : 's'}</span>
+              <span className="badge badge-secondary">{members.length} people under an L1</span>
+            </div>
+            <input
+              className="form-input"
+              style={{ marginLeft: 'auto', maxWidth: 280 }}
+              placeholder="🔍 Find an employee or L1 by name / code"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            {/* L1 list */}
+            <div style={{ flex: '1 1 240px', maxWidth: 320, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 460, overflowY: 'auto' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>L1 SPOC</div>
+              {shownL1s.length === 0 && <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: 8 }}>No match.</div>}
+              {shownL1s.map((l) => {
+                const on = active?.id === l.id;
+                return (
+                  <button
+                    key={l.id}
+                    type="button"
+                    onClick={() => setActiveId(l.id)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', width: '100%',
+                      padding: '10px 12px', borderRadius: 8, cursor: 'pointer', font: 'inherit', color: 'inherit',
+                      border: `1px solid ${on ? 'var(--primary)' : 'var(--border)'}`,
+                      background: on ? 'var(--primary-light)' : 'var(--surface)',
+                    }}
+                  >
+                    <L1Avatar p={l} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fullName(l)}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        {l.employee_id ? `#${l.employee_id}` : ''}
+                        {l.status !== 'Active' && <span style={{ color: 'var(--danger)', fontWeight: 600 }}> · Inactive</span>}
+                      </div>
+                    </div>
+                    <span className="badge badge-info" title="People under this L1">{peopleOf(l.id).length}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* People under the picked L1 */}
+            {active && (
+              <div style={{ flex: '3 1 380px', minWidth: 0, border: '1px solid var(--border)', borderRadius: 8, display: 'flex', flexDirection: 'column' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
+                  <L1Avatar p={active} size={40} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>
+                      {fullName(active)}{active.employee_id ? ` (#${active.employee_id})` : ''}
+                      {active.status !== 'Active' && <span className="badge badge-danger" style={{ marginLeft: 8 }}>Inactive — move their people</span>}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      {[active.designation, active.department, active.outlet_location].filter(Boolean).join(' · ') || '—'}
+                    </div>
+                  </div>
+                </div>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', fontSize: 12, color: 'var(--text-muted)', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={allTicked}
+                    onChange={() => setTicked(allTicked ? new Set() : new Set(activePeople.map((p) => p.id)))}
+                  />
+                  Select all · {activePeople.length} {activePeople.length === 1 ? 'person' : 'people'} under this L1
+                </label>
+
+                <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+                  {activePeople.map((p) => (
+                    <label key={p.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', cursor: 'pointer',
+                      borderBottom: '1px solid var(--border)', background: ticked.has(p.id) ? 'var(--primary-light)' : undefined,
+                    }}>
+                      <input type="checkbox" checked={ticked.has(p.id)} onChange={() => toggle(p.id)} />
+                      <L1Avatar p={p} size={30} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>{fullName(p)}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{sub(p)}</div>
+                      </div>
+                      {p.employee_id && <code style={{ fontSize: 11, background: 'var(--bg)', padding: '2px 6px', borderRadius: 4 }}>#{p.employee_id}</code>}
+                    </label>
+                  ))}
+                </div>
+
+                {/* Move bar */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '12px 14px', background: 'var(--bg)', borderRadius: '0 0 8px 8px' }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, marginRight: 'auto' }}>
+                    {tickedIds.length ? `${tickedIds.length} selected` : <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>Tick people to move them</span>}
+                  </span>
+                  <select
+                    className="form-select"
+                    style={{ width: 'auto', minWidth: 220 }}
+                    value={moveTo}
+                    disabled={!tickedIds.length || saving}
+                    onChange={(e) => setMoveTo(e.target.value)}
+                  >
+                    <option value="">Move to L1…</option>
+                    <optgroup label="Current L1s">
+                      {l1s.filter((l) => l.id !== active.id && l.status === 'Active' && !ticked.has(l.id)).map((l) => (
+                        <option key={l.id} value={l.id}>{fullName(l)}{l.employee_id ? ` (#${l.employee_id})` : ''} — {peopleOf(l.id).length} people</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Make someone else L1">
+                      {employees.filter((e) => !l1Ids.has(e.id) && !ticked.has(e.id)).map((e) => (
+                        <option key={e.id} value={e.id}>{fullName(e)}{e.employee_id ? ` (#${e.employee_id})` : ''}</option>
+                      ))}
+                    </optgroup>
+                    <option value="__none__">No L1 (remove)</option>
+                  </select>
+                  <button className="btn btn-primary" disabled={!tickedIds.length || !moveTo || saving} onClick={move}>
+                    {saving ? 'Saving…' : moveTo === '__none__' ? 'Remove L1' : 'Move'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function TempPasswordModal({ show, onClose, empName, username, password, passwordLabel = 'Temporary Password', note = '' }) {
   const [copied, setCopied] = useState(false);
   const hasPassword = !!password;
@@ -517,13 +739,14 @@ function TempPasswordModal({ show, onClose, empName, username, password, passwor
 const EMPTY_FORM = {
   first_name: '', middle_name: '', last_name: '', email: '', phone: '',
   department: '', designation: '', division: '', divisionNew: '', join_date: '', date_of_birth: '', ctc: '',
+  salary_ctc: '', actual_gross: '',
   bank_acc: '', pan: '', aadhar: '', role: 'employee',
-  weekly_holiday: 'Sunday', shift_id: '', leave_allocation: 0,
+  weekly_holiday: 'Sunday', shift_id: '', leave_allocation: 0, opening_earned_leave: '',
   country: 'India', passport_number: '', work_permit_number: '', work_permit_expiry: '',
   compliance_enabled: false,
   pf_enabled: false, pf_number: '', pf_amount: '',
   esic_enabled: false, esic_number: '', esic_amount: '',
-  employee_id: '', outlet_location: '', probation_months: 0, manager_id: '', hod_id: '',
+  employee_id: '', outlet_location: '', outlet_id: '', probation_months: 0, manager_id: '', hod_id: '', l1_spoc_id: '',
   essl_employee_code: '', overtime_applicable: false, comp_off_eligible: false,
 };
 
@@ -639,6 +862,14 @@ export default function EmployeesPage() {
   // Raniwala doesn't want Leave/CTC/Compliance surfaced on this list — those
   // stay payroll-only for them, unlike every other tenant.
   const showFinanceCols = !isManager && !isRaniwalaTenant(tenant);
+  // HR Support (no payroll) adds employees, so it gets the whole employee form
+  // incl. salary (20261021_8), but no increments, salary history or
+  // withholding here.
+  const hrSupport = isHrSupport(profile);
+  // Salary in employee_salaries (HR + the employee only), not on the profile —
+  // tenants.salary_private, migration 20261014_4.
+  const salaryPrivate = !!tenant?.salary_private;
+  const [salaryEmp, setSalaryEmp] = useState(null);
 
   // Outlet scoping — follows whatever outlet HR currently has selected app-wide;
   // selectOutlet lets HR switch it right here instead of going to the Outlets page.
@@ -714,6 +945,7 @@ export default function EmployeesPage() {
   const [outletTransferEmp, setOutletTransferEmp] = useState(null);
   const [outletHistoryEmp,  setOutletHistoryEmp]  = useState(null);
   const [showBulkAssign, setShowBulkAssign] = useState(false);
+  const [showL1Spocs, setShowL1Spocs] = useState(false);
 
   // ---- promotion history ----
   const [promotionEmp,  setPromotionEmp]  = useState(null);
@@ -739,7 +971,8 @@ export default function EmployeesPage() {
           .eq('date', todayStr()),
         listActiveEmployees(tenant.id),
       ]);
-      setEmployees(empRes.data);
+      const withPay = salaryPrivate && !isManager ? await withSalaries(tenant, empRes) : empRes;
+      setEmployees(withPay.data);
       setTotalCount(empRes.count);
       setDepartments((deptRes.data || []).map((d) => d.name));
       const nextDivisions = divisionRes.data || [];
@@ -767,14 +1000,16 @@ export default function EmployeesPage() {
     } finally {
       setLoading(false);
     }
-  }, [tenant, page, debouncedSearch, deptFilter, divisionFilter, statusFilter, outletId, isManager, profile?.id]);
+  }, [tenant, page, debouncedSearch, deptFilter, divisionFilter, statusFilter, outletId, isManager, profile?.id, salaryPrivate]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const openModal = (emp = null, prefill = null) => {
     setEditEmp(emp);
     setPrefillReferralId(prefill?.referral_id || null);
-    setForm(prefill && !emp ? { ...EMPTY_FORM, ...prefill } : emp ? {
+    // A new employee starts in the outlet being viewed; their code follows it.
+    const newForm = { ...EMPTY_FORM, outlet_id: outletId || '' };
+    setForm(prefill && !emp ? { ...newForm, ...prefill } : emp ? {
       first_name: emp.first_name || '',
       middle_name: emp.middle_name || '',
       last_name: emp.last_name || '',
@@ -787,6 +1022,8 @@ export default function EmployeesPage() {
       join_date: emp.join_date || '',
       date_of_birth: emp.date_of_birth || '',
       ctc: emp.ctc || '',
+      salary_ctc: emp.salary_ctc ?? '',
+      actual_gross: emp.actual_gross ?? '',
       bank_acc: emp.bank_acc || '',
       pan: emp.pan || '',
       aadhar: emp.aadhar || '',
@@ -810,10 +1047,11 @@ export default function EmployeesPage() {
       probation_months: emp.probation_months ?? 0,
       manager_id: emp.manager_id || '',
       hod_id: emp.hod_id || '',
+      l1_spoc_id: emp.l1_spoc_id || '',
       essl_employee_code: emp.essl_employee_code || '',
       overtime_applicable: !!emp.overtime_applicable,
       comp_off_eligible: !!emp.comp_off_eligible,
-    } : EMPTY_FORM);
+    } : newForm);
     setExtraOutletIds([]);
     if (emp) listProfileOutletAccess(emp.id).then(({ data }) => setExtraOutletIds(data || []));
     setShowModal(true);
@@ -866,7 +1104,9 @@ export default function EmployeesPage() {
     (async () => {
       if (editId) {
         const { data } = await supabase.from('profiles').select('*').eq('id', editId).eq('tenant_id', tenant.id).maybeSingle();
-        if (data) openModal(data);
+        // Same salary merge as the list, or the form opens with an empty gross.
+        const withPay = data && salaryPrivate ? await withSalaries(tenant, { data: [data] }) : { data: [data] };
+        if (data) openModal(withPay.data[0]);
       } else {
         const code = newEssl.trim().toUpperCase();
         const [{ data: found }, { data: depts }] = await Promise.all([lookupEsslCode(tenant.id, code), listDepartments(tenant.id)]);
@@ -915,7 +1155,28 @@ export default function EmployeesPage() {
     if (!form.join_date) return showToast('Joining date is mandatory', 'error');
     // TEMP: bank details optional pre-launch — restore mandatory check before go-live.
     if (form.bank_acc && !/^\d{9,18}$/.test(form.bank_acc.trim())) return showToast('Bank account number must be 9-18 digits', 'error');
-    if (!form.ctc || parseFloat(form.ctc) <= 0) return showToast('Valid Monthly CTC is required', 'error');
+    if (!form.ctc || parseFloat(form.ctc) <= 0) return showToast(salaryPrivate ? 'Valid Monthly Gross Salary is required' : 'Valid Monthly CTC is required', 'error');
+    // Outlet-coded company (IndWell): the employee code comes from the outlet.
+    if (!editEmp && !form.outlet_id && outlets.some((o) => o.employee_code_prefix)) {
+      return showToast('Select the outlet — the employee code is made from it', 'error');
+    }
+    // Raniwala: weekly off, holidays and shift come from the outlet, and the
+    // EMP code is the ESSL code that brings their machine punches in.
+    if (!editEmp && isRaniwala && form.role !== 'admin') {
+      if (!form.outlet_id) return showToast('Select the outlet — weekly off, holidays and shift times come from it', 'error');
+      if (!(form.employee_id || '').trim()) return showToast('Employee ID is mandatory — it is also their ESSL machine code', 'error');
+    }
+    if (salaryPrivate && !(parseFloat(form.salary_ctc) > 0) && (!editEmp || Number(editEmp.salary_ctc) > 0)) {
+      return showToast('Monthly CTC is required — enter it as well as the gross', 'error');
+    }
+    if (salaryPrivate && form.actual_gross !== '' && form.actual_gross != null
+        && !(parseFloat(form.actual_gross) > 0 && parseFloat(form.actual_gross) < parseFloat(form.ctc))) {
+      return showToast('Actual gross must be below the monthly gross (leave it empty if they are paid the full gross)', 'error');
+    }
+    const openingEarnedLeave = parseFloat(form.opening_earned_leave) || 0;
+    if (!editEmp && isRaniwala && (openingEarnedLeave < 0 || openingEarnedLeave > 60 || (openingEarnedLeave * 2) % 1 !== 0)) {
+      return showToast('Earned Leave on joining must be 0 to 60 days, in steps of 0.5', 'error');
+    }
 
     const profileData = {
       first_name: form.first_name.trim(),
@@ -944,10 +1205,12 @@ export default function EmployeesPage() {
       leave_allocation: parseInt(form.leave_allocation, 10) || 0,
       compliance_enabled: form.compliance_enabled || false,
       pf_enabled:  form.compliance_enabled ? (form.pf_enabled || false) : false,
-      pf_number:   form.compliance_enabled && form.pf_enabled ? form.pf_number.trim() : '',
+      // Raniwala's PF / ESIC follow the salary rules, not these ticks, so the
+      // UAN and ESIC number are kept as typed (the payslip prints them).
+      pf_number:   isRaniwala || (form.compliance_enabled && form.pf_enabled) ? (form.pf_number || '').trim() : '',
       pf_amount:   form.compliance_enabled && form.pf_enabled ? (parseFloat(form.pf_amount) || 0) : 0,
       esic_enabled: form.compliance_enabled && form.pf_enabled ? (form.esic_enabled || false) : false,
-      esic_number:  form.compliance_enabled && form.pf_enabled && form.esic_enabled ? form.esic_number.trim() : '',
+      esic_number:  isRaniwala || (form.compliance_enabled && form.pf_enabled && form.esic_enabled) ? (form.esic_number || '').trim() : '',
       esic_amount:  form.compliance_enabled && form.pf_enabled && form.esic_enabled ? (parseFloat(form.esic_amount) || 0) : 0,
       employee_id:      (form.employee_id || '').trim().toUpperCase() || null,
       outlet_location:  (form.outlet_location || '').trim(),
@@ -957,6 +1220,24 @@ export default function EmployeesPage() {
       essl_employee_code: (form.essl_employee_code || '').trim() || null,
       overtime_applicable: !!form.overtime_applicable,
       comp_off_eligible: !!form.comp_off_eligible,
+    };
+    // Raniwala L1 SPOC — kept off profileData, which also goes to the
+    // create-employee-user edge function; set by the profile update instead.
+    const l1SpocId = form.l1_spoc_id || null;
+    // Salary-private tenant: the salary is saved separately below (with its
+    // CTC, actual gross and history), never on the profile row.
+    if (salaryPrivate) profileData.ctc = 0;
+    const saveSalary = async (profileId, isNew) => {
+      if (!salaryPrivate || !profileId) return;
+      const { error: salErr } = await setEmployeeSalary({
+        profileId,
+        gross: parseFloat(form.ctc) || null,
+        ctc: salaryField(form.salary_ctc, editEmp?.salary_ctc),
+        actualGross: salaryField(form.actual_gross, editEmp?.actual_gross),
+        effectiveFrom: isNew ? (form.join_date || null) : null,
+        source: isNew ? 'new employee' : 'employee form',
+      });
+      if (salErr) showToast('Employee saved, but the salary did not save: ' + salErr.message, 'warning');
     };
 
     setSaving(true);
@@ -991,10 +1272,11 @@ export default function EmployeesPage() {
         }
 
         const { email: _skipEmail, phone: _skipPhone, ...restProfileData } = profileData;
-        const { error } = await updateEmployee(editEmp.id, restProfileData);
+        const { error } = await updateEmployee(editEmp.id, isRaniwala ? { ...restProfileData, l1_spoc_id: l1SpocId } : restProfileData);
         if (error) throw new Error('Update failed: ' + error.message);
         const { error: accessErr } = await setProfileOutletAccess(tenant.id, editEmp.id, extraOutletIds);
         if (accessErr) throw new Error('Employee saved, but clock-in outlet access failed: ' + accessErr.message);
+        await saveSalary(editEmp.id, false);
         showToast('Employee updated', 'success');
         setShowModal(false);
 
@@ -1016,18 +1298,38 @@ export default function EmployeesPage() {
         // placeholder when no email was entered — see resolveLoginEmail). The
         // credentials modal shows the phone number itself, not that placeholder,
         // since that's what the employee actually types in on the login page.
-        const { tempPassword, userId } = await createEmployee(tenant?.id, { ...profileData, login_email: resolveLoginEmail(profileData) });
+        // The outlet is picked here (Transfer moves it later); the branch text follows it.
+        const newOutlet = outlets.find((o) => o.id === form.outlet_id);
+        const createData = newOutlet ? { ...profileData, outlet_id: newOutlet.id, outlet_location: newOutlet.name } : profileData;
+        const { tempPassword, userId } = await createEmployee(tenant?.id, { ...createData, login_email: resolveLoginEmail(createData) });
         // The create-employee-user edge function only writes a fixed field
         // list that doesn't include these — set them straight after.
         if (userId) {
           const { error: extraErr } = await updateEmployee(userId, {
+            // Also written by the edge function, but an older deployed copy
+            // dropped them (21 Oct 2026) — set here too so they always stick.
+            date_of_birth: profileData.date_of_birth,
+            division: profileData.division,
             overtime_applicable: profileData.overtime_applicable,
             comp_off_eligible: profileData.comp_off_eligible,
             probation_months: profileData.probation_months,
             manager_id: profileData.manager_id,
             hod_id: profileData.hod_id,
+            ...(isRaniwala && l1SpocId ? { l1_spoc_id: l1SpocId } : {}),
+            ...(newOutlet ? { outlet_id: newOutlet.id } : {}),
           });
-          if (extraErr) showToast('Employee created, but reporting manager / HOD / overtime / comp off / probation settings failed to save: ' + extraErr.message, 'warning');
+          if (extraErr) showToast('Employee created, but date of birth / division / reporting manager / HOD / L1 / overtime / comp off / probation settings failed to save: ' + extraErr.message, 'warning');
+          await saveSalary(userId, true);
+          // Raniwala: HR gives the opening Earned Leave; the 1.5 a month starts
+          // on the 1st of next month (20261028_2).
+          if (isRaniwala && openingEarnedLeave > 0) {
+            const { data: leaveTypes } = await listLeaveTypes(tenant.id);
+            const earned = leaveTypes.find((t) => t.name === 'Earned Leave');
+            const { error: leaveErr } = earned
+              ? await allocateLeave(userId, earned.id, openingEarnedLeave, 'Opening balance given on joining')
+              : { error: { message: 'Earned Leave type not found' } };
+            if (leaveErr) showToast('Employee created, but the Earned Leave balance failed to save — add it from Leave Balances: ' + leaveErr.message, 'warning');
+          }
         }
         setShowModal(false);
         setTempCreds({
@@ -1295,6 +1597,11 @@ export default function EmployeesPage() {
                   <i className="fas fa-people-arrows" /> Assign Unassigned to Outlet
                 </button>
               )}
+              {isRaniwala && (
+                <button className="btn btn-outline" onClick={() => setShowL1Spocs(true)} title="Current L1s, the people under each, and moving people to another L1">
+                  <i className="fas fa-user-friends" /> L1 SPOCs
+                </button>
+              )}
               <button className="btn btn-primary" disabled={!!importProgress} onClick={() => openModal()}>
                 <i className="fas fa-plus" /> Add Employee
               </button>
@@ -1365,6 +1672,17 @@ export default function EmployeesPage() {
                         {e.division && (
                           <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>{e.division}</div>
                         )}
+                        {salaryPrivate && !isManager && !(Number(e.ctc) > 0) && (
+                          <div style={{ marginTop: 3 }}>
+                            <span className="badge badge-danger" style={{ fontSize: 10 }} title="No monthly gross saved yet. Open Edit and enter it.">Salary not set</span>
+                          </div>
+                        )}
+                        {(e.overtime_applicable || e.comp_off_eligible) && (
+                          <div style={{ display: 'flex', gap: 4, marginTop: 3 }}>
+                            {e.overtime_applicable && <span className="badge badge-info" style={{ fontSize: 10 }} title="Paid overtime for extra hours">OT</span>}
+                            {e.comp_off_eligible && <span className="badge badge-warning" style={{ fontSize: 10 }} title="Earns comp off for working a weekly off / holiday">Comp Off</span>}
+                          </div>
+                        )}
                       </td>
                       {showFinanceCols && <td>{typeof e.leave_allocation === 'number' ? e.leave_allocation : (e.leave_allocation || 0)}</td>}
                       {showFinanceCols && <td>{fmt(e.ctc)}</td>}
@@ -1389,7 +1707,8 @@ export default function EmployeesPage() {
                       <td>
                         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                           {!isManager && <button className="btn btn-outline btn-icon btn-sm" onClick={() => openModal(e)} title="Edit"><i className="fas fa-edit" /></button>}
-                          {!isManager && <button className="btn btn-outline btn-icon btn-sm" onClick={() => setPromotionEmp(e)} title="Promotion / Increment History" style={{ color: 'var(--primary)' }}><i className="fas fa-level-up-alt" /></button>}
+                          {!isManager && !hrSupport && <button className="btn btn-outline btn-icon btn-sm" onClick={() => setPromotionEmp(e)} title="Promotion / Increment History" style={{ color: 'var(--primary)' }}><i className="fas fa-level-up-alt" /></button>}
+                          {salaryPrivate && !isManager && !hrSupport && <button className="btn btn-outline btn-icon btn-sm" onClick={() => setSalaryEmp(e)} title="Salary history — gross, CTC, pay by month, arrears, advances" style={{ color: 'var(--success)' }}><i className="fas fa-indian-rupee-sign" /></button>}
                           <button className="btn btn-outline btn-icon btn-sm" onClick={() => showCredentials(e)} title="Show Credentials"><i className="fas fa-key" /></button>
                           {!isManager && (
                             <button
@@ -1425,7 +1744,7 @@ export default function EmployeesPage() {
                             </button>
                           )}
                           {!isManager && <button className="btn btn-outline btn-icon btn-sm" onClick={() => toggleStatus(e)} title="Toggle Status"><i className="fas fa-power-off" /></button>}
-                          {!isManager && (
+                          {!isManager && !hrSupport && (
                             <button
                               className="btn btn-outline btn-icon btn-sm"
                               onClick={() => toggleWithholding(e)}
@@ -1460,7 +1779,7 @@ export default function EmployeesPage() {
         <div style={{ maxHeight: '70vh', overflowY: 'auto', paddingRight: 8 }}>
           <div className="form-row">
             <div className="form-group">
-              <label className="form-label">Employee ID</label>
+              <label className="form-label">Employee ID{isRaniwala && !editEmp ? ' *' : ''}</label>
               <input
                 className="form-input"
                 value={form.employee_id}
@@ -1476,15 +1795,28 @@ export default function EmployeesPage() {
               />
               <div className="form-hint">Outlet(2) + Location(2) + Number · e.g. MCMU1042</div>
             </div>
-            <div className="form-group">
-              <label className="form-label">Branch Name</label>
-              <input
-                className="form-input"
-                value={form.outlet_location}
-                onChange={(e) => setForm({ ...form, outlet_location: e.target.value })}
-                placeholder="e.g. Mumbai Bandra, Delhi CP"
-              />
-            </div>
+            {!editEmp && outlets.length > 0 ? (
+              <div className="form-group">
+                <label className="form-label">Outlet{isRaniwala || outlets.some((o) => o.employee_code_prefix) ? ' *' : ''}</label>
+                <select className="form-select" value={form.outlet_id} onChange={(e) => setForm({ ...form, outlet_id: e.target.value })}>
+                  <option value="">Select outlet</option>
+                  {outlets.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </select>
+                {outlets.find((o) => o.id === form.outlet_id)?.employee_code_prefix && (
+                  <div className="form-hint">Leave Employee ID blank to get the next {outlets.find((o) => o.id === form.outlet_id).employee_code_prefix} code</div>
+                )}
+              </div>
+            ) : (
+              <div className="form-group">
+                <label className="form-label">Branch Name</label>
+                <input
+                  className="form-input"
+                  value={form.outlet_location}
+                  onChange={(e) => setForm({ ...form, outlet_location: e.target.value })}
+                  placeholder="e.g. Mumbai Bandra, Delhi CP"
+                />
+              </div>
+            )}
           </div>
           <div className="form-row form-row-3">
             <div className="form-group"><label className="form-label">First Name *</label><input className="form-input" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} /></div>
@@ -1555,8 +1887,31 @@ export default function EmployeesPage() {
           </div>
           <div className="form-row">
             <div className="form-group"><label className="form-label">Date of Joining *</label><input className="form-input" type="date" value={form.join_date} onChange={(e) => setForm({ ...form, join_date: e.target.value })} /></div>
-            <div className="form-group"><label className="form-label">Monthly CTC (₹) *</label><input className="form-input" type="number" min="0" value={form.ctc} onChange={(e) => setForm({ ...form, ctc: e.target.value })} /></div>
+            <div className="form-group"><label className="form-label">{isRaniwala ? 'Monthly Gross Salary (₹) *' : 'Monthly CTC (₹) *'}</label><input className="form-input" type="number" min="0" value={form.ctc} onChange={(e) => setForm({ ...form, ctc: e.target.value })} />{isRaniwala && <div className="form-hint">Basic, HRA, PF and ESIC are worked out from this{hrSupport ? '.' : ' — see Payroll → Salary Structure.'}</div>}</div>
           </div>
+          {salaryPrivate && (
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Monthly CTC (₹) *</label>
+                <input
+                  className="form-input" type="number" min="0" value={form.salary_ctc}
+                  placeholder="Enter the CTC"
+                  onChange={(e) => setForm({ ...form, salary_ctc: e.target.value })}
+                />
+                <div className="form-hint">Cost to company, as HR has it. Not worked out from the gross.</div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Actual Gross (₹)</label>
+                <input className="form-input" type="number" min="0" value={form.actual_gross} placeholder="Only if paid below the gross" onChange={(e) => setForm({ ...form, actual_gross: e.target.value })} />
+                <div className="form-hint">
+                  {parseFloat(form.actual_gross) > 0 && parseFloat(form.actual_gross) < parseFloat(form.ctc)
+                    ? `Gross Advance ₹${(parseFloat(form.ctc) - parseFloat(form.actual_gross)).toLocaleString('en-IN')} a month. `
+                    : ''}
+                  PF / ESIC stay on the monthly gross; payroll deducts the difference as the Gross Advance. Seen only by HR and the employee.
+                </div>
+              </div>
+            </div>
+          )}
           <div className="form-row">
             <div className="form-group"><label className="form-label">Date of Birth</label><input className="form-input" type="date" value={form.date_of_birth} onChange={(e) => setForm({ ...form, date_of_birth: e.target.value })} /></div>
           </div>
@@ -1593,8 +1948,26 @@ export default function EmployeesPage() {
             <div className="form-hint">9-18 digit account number, numbers only.</div>
           </div>
 
+          {/* Raniwala: PF and ESIC are worked out by payroll, HR only keeps the numbers. */}
+          {isRaniwala && (
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">UAN Number</label>
+                <input className="form-input" value={form.pf_number} placeholder="e.g. 100123456789"
+                  onChange={(e) => setForm({ ...form, pf_number: e.target.value })} />
+                <div className="form-hint">Printed on the payslip in a month PF is deducted.</div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">ESIC Number</label>
+                <input className="form-input" value={form.esic_number} placeholder="e.g. 2014567890"
+                  onChange={(e) => setForm({ ...form, esic_number: e.target.value })} />
+                <div className="form-hint">Printed on the payslip under the UAN in a month ESIC is deducted.</div>
+              </div>
+            </div>
+          )}
+
           {/* Compliance Section */}
-          <div className="form-group" style={{ marginTop: 4 }}>
+          {!isRaniwala && <div className="form-group" style={{ marginTop: 4 }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
               <input
                 type="checkbox"
@@ -1603,9 +1976,9 @@ export default function EmployeesPage() {
               />
               <span className="form-label" style={{ margin: 0 }}>Compliance</span>
             </label>
-          </div>
+          </div>}
 
-          {form.compliance_enabled && (
+          {!isRaniwala && form.compliance_enabled && (
             <div className="form-group" style={{ marginLeft: 20 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
                 <input
@@ -1736,7 +2109,7 @@ export default function EmployeesPage() {
               <label className="form-label">User Role</label>
               <select className="form-select" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
                 <option value="employee">Employee</option>
-                <option value="admin">HR</option>
+                {(!hrSupport || form.role === 'admin') && <option value="admin">HR</option>}
                 <option value="manager">Manager</option>
                 {isRaniwalaTenant(tenant) && <option value="hod">HOD</option>}
                 {isRaniwalaTenant(tenant) && <option value="management">Management</option>}
@@ -1774,7 +2147,8 @@ export default function EmployeesPage() {
               <label className="form-label">{isRaniwalaTenant(tenant) ? 'Reporting HOD' : 'HOD'}</label>
               <select className="form-select" value={form.hod_id} onChange={(e) => setForm({ ...form, hod_id: e.target.value })}>
                 <option value="">None</option>
-                {managerOptions.filter((m) => (!editEmp || m.id !== editEmp.id) && m.id !== form.manager_id && raniwalaPick(m, form.hod_id)).map((m) => (
+                {/* Raniwala: the reporting manager can also be the HOD (one approval covers both stages). */}
+                {managerOptions.filter((m) => (!editEmp || m.id !== editEmp.id) && (isRaniwalaTenant(tenant) || m.id !== form.manager_id) && raniwalaPick(m, form.hod_id)).map((m) => (
                   <option key={m.id} value={m.id}>{fullName(m)}{m.employee_id ? ` (#${m.employee_id})` : ''} — {roleLabel(m.role)}</option>
                 ))}
               </select>
@@ -1783,6 +2157,26 @@ export default function EmployeesPage() {
           </div>
             );
           })()}
+          {isRaniwala && (
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">L1 SPOC (Reporting)</label>
+                <select className="form-select" value={form.l1_spoc_id} onChange={(e) => setForm({ ...form, l1_spoc_id: e.target.value })}>
+                  <option value="">None</option>
+                  {form.l1_spoc_id && !managerOptions.some((m) => m.id === form.l1_spoc_id) && (
+                    <option value={form.l1_spoc_id}>Current L1 (inactive)</option>
+                  )}
+                  {managerOptions.filter((m) => !editEmp || m.id !== editEmp.id).map((m) => (
+                    <option key={m.id} value={m.id}>{fullName(m)}{m.employee_id ? ` (#${m.employee_id})` : ''}{m.department ? ` — ${m.department}` : ''}</option>
+                  ))}
+                </select>
+                <div className="form-hint">
+                  For staff who can't use the app: the L1 sees their attendance and leave and sends leave / regularize requests for them.
+                  Not an approver. Leave as None if not needed. See all L1s with the <b>L1 SPOCs</b> button.
+                </div>
+              </div>
+            </div>
+          )}
           {editEmp && outlets.length > 1 && (
             <div className="form-row">
               <div className="form-group">
@@ -1811,14 +2205,26 @@ export default function EmployeesPage() {
               </div>
             </div>
           )}
-          <div className="form-row">
-            <div className="form-group">
-              <label className="form-label">Annual Leave Allocation</label>
-              <input className="form-input" type="number" min="0" value={form.leave_allocation}
-                onChange={(e) => setForm({ ...form, leave_allocation: e.target.value })} />
-              <div className="form-hint">Annual leaves (post-probation). Set 0 if using earned-leave only.</div>
+          {isRaniwala && !editEmp ? (
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Earned Leave on Joining (days)</label>
+                <input className="form-input" type="number" min="0" max="60" step="0.5" placeholder="0"
+                  value={form.opening_earned_leave}
+                  onChange={(e) => setForm({ ...form, opening_earned_leave: e.target.value })} />
+                <div className="form-hint">The balance they start with. 1.5 days are added automatically on the 1st of every month from next month.</div>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Annual Leave Allocation</label>
+                <input className="form-input" type="number" min="0" value={form.leave_allocation}
+                  onChange={(e) => setForm({ ...form, leave_allocation: e.target.value })} />
+                <div className="form-hint">Annual leaves (post-probation). Set 0 if using earned-leave only.</div>
+              </div>
+            </div>
+          )}
         </div>
       </Modal>
 
@@ -1872,12 +2278,28 @@ export default function EmployeesPage() {
         onAssigned={fetchData}
       />
 
+      <L1SpocModal
+        show={showL1Spocs}
+        onClose={() => setShowL1Spocs(false)}
+        tenantId={tenant?.id}
+        employees={managerOptions}
+        onChanged={fetchData}
+      />
+
+      <SalaryHistoryModal
+        show={!!salaryEmp}
+        onClose={() => setSalaryEmp(null)}
+        employee={salaryEmp}
+        tenantId={tenant?.id}
+      />
+
       <PromotionModal
         show={!!promotionEmp}
         onClose={() => setPromotionEmp(null)}
         employee={promotionEmp}
         tenantId={tenant?.id}
         currentUserId={profile?.id}
+        salaryPrivate={salaryPrivate}
         onSaved={fetchData}
       />
     </>
@@ -1886,7 +2308,32 @@ export default function EmployeesPage() {
 
 // ── Promotion / Increment History Modal ─────────────────────────────────────
 
-function PromotionModal({ show, onClose, employee, tenantId, currentUserId, onSaved }) {
+const inr = (v) => `₹${Number(v || 0).toLocaleString('en-IN')}`;
+
+// "Increment: ₹x (y%)" under a new-salary box.
+function IncrementHint({ from, to }) {
+  if (!(to > 0) || !(from > 0)) return null;
+  return (
+    <div className="form-hint" style={{ color: to >= from ? 'var(--success)' : 'var(--danger)' }}>
+      Increment: ₹{Number(to - from).toLocaleString('en-IN')} ({((to - from) / from * 100).toFixed(1)}%)
+    </div>
+  );
+}
+
+// "(+₹x)" after a history line's old → new figure.
+function ChangeTag({ from, to }) {
+  const diff = Number(to) - Number(from);
+  if (!diff) return null;
+  return (
+    <span style={{ color: diff > 0 ? 'var(--success)' : 'var(--danger)', marginLeft: 6 }}>
+      ({diff > 0 ? '+' : '−'}{inr(Math.abs(diff))})
+    </span>
+  );
+}
+
+// Salary-private tenant (Raniwala): `employee.ctc` is the monthly gross (see
+// mergeSalaries) and the CTC is `salary_ctc`, so the form shows and sets both.
+function PromotionModal({ show, onClose, employee, tenantId, currentUserId, salaryPrivate, onSaved }) {
   const [history, setHistory]     = useState([]);
   const [loading, setLoading]     = useState(false);
   const [showForm, setShowForm]   = useState(false);
@@ -1894,37 +2341,62 @@ function PromotionModal({ show, onClose, employee, tenantId, currentUserId, onSa
   const [form, setForm] = useState({
     effectiveDate:  '',
     newDesignation: '',
+    newGross:       '',
     newCtc:         '',
     notes:          '',
   });
+  // Current pay, refreshed after a save (the `employee` row is the list's copy).
+  const [current, setCurrent] = useState({ gross: 0, ctc: 0 });
 
   useEffect(() => {
     if (!show || !employee) return;
+    const gross = Number(employee.ctc) || 0;
+    setCurrent(salaryPrivate
+      ? { gross, ctc: Number(employee.salary_ctc) || 0 }
+      : { gross: 0, ctc: gross });
     setShowForm(false);
     setLoading(true);
     listEmployeePromotions(employee.id)
       .then(({ data }) => setHistory(data || []))
       .finally(() => setLoading(false));
-  }, [show, employee]);
+  }, [show, employee, salaryPrivate]);
+
+  const formGross = parseFloat(form.newGross) || 0;
+  const formCtc   = parseFloat(form.newCtc) || 0;
+  // A box left empty keeps the current figure; the CTC is never worked out
+  // from the gross.
+  const nextGross = formGross || current.gross;
+  const nextCtc   = formCtc || current.ctc;
 
   const handleSave = async () => {
     if (!form.effectiveDate) return showToast('Effective date is required', 'error');
-    if (!form.newDesignation && !form.newCtc) return showToast('Enter new designation and/or new CTC', 'error');
+    if (salaryPrivate) {
+      if (!form.newDesignation && !formGross && !formCtc) return showToast('Enter new designation, new gross and/or new CTC', 'error');
+    } else if (!form.newDesignation && !formCtc) {
+      return showToast('Enter new designation and/or new CTC', 'error');
+    }
     setSaving(true);
     try {
+      const salaryChanged = salaryPrivate && (formGross > 0 || formCtc > 0);
       const { error } = await recordPromotion(tenantId, employee.id, {
         effectiveDate:  form.effectiveDate,
         oldDesignation: employee.designation,
         newDesignation: form.newDesignation || employee.designation,
-        oldCtc:         employee.ctc,
-        newCtc:         parseFloat(form.newCtc) || employee.ctc,
+        oldCtc:         current.ctc,
+        newCtc:         salaryPrivate ? (salaryChanged ? nextCtc : null) : (formCtc || current.ctc),
+        oldGross:       current.gross,
+        newGross:       salaryChanged ? nextGross : null,
         notes:          form.notes,
         createdBy:      currentUserId,
+        salaryPrivate,
       });
       if (error) throw error;
       showToast('Promotion recorded and profile updated', 'success');
+      if (salaryPrivate ? salaryChanged : formCtc > 0) {
+        setCurrent(salaryPrivate ? { gross: nextGross, ctc: nextCtc } : { gross: 0, ctc: formCtc });
+      }
       setShowForm(false);
-      setForm({ effectiveDate: '', newDesignation: '', newCtc: '', notes: '' });
+      setForm({ effectiveDate: '', newDesignation: '', newGross: '', newCtc: '', notes: '' });
       const { data } = await listEmployeePromotions(employee.id);
       setHistory(data || []);
       onSaved();
@@ -1968,21 +2440,32 @@ function PromotionModal({ show, onClose, employee, tenantId, currentUserId, onSa
                 onChange={e => setForm({ ...form, newDesignation: e.target.value })} />
             </div>
           </div>
+          {salaryPrivate && (
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Current Monthly Gross</label>
+                <input className="form-input" disabled value={inr(current.gross)} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">New Monthly Gross (₹)</label>
+                <input type="number" min="0" className="form-input" placeholder="Enter new gross"
+                  value={form.newGross} onChange={e => setForm({ ...form, newGross: e.target.value })} />
+                <IncrementHint from={current.gross} to={formGross} />
+              </div>
+            </div>
+          )}
           <div className="form-row">
             <div className="form-group">
-              <label className="form-label">Current CTC</label>
-              <input className="form-input" disabled value={`₹${Number(employee?.ctc || 0).toLocaleString('en-IN')}`} />
+              <label className="form-label">{salaryPrivate ? 'Current Monthly CTC' : 'Current CTC'}</label>
+              <input className="form-input" disabled value={inr(current.ctc)} />
             </div>
             <div className="form-group">
               <label className="form-label">New Monthly CTC (₹)</label>
-              <input type="number" className="form-input" placeholder="Enter new CTC"
+              <input type="number" min="0" className="form-input"
+                placeholder="Enter new CTC"
                 value={form.newCtc} onChange={e => setForm({ ...form, newCtc: e.target.value })} />
-              {form.newCtc && employee?.ctc && (
-                <div className="form-hint" style={{ color: 'var(--success)' }}>
-                  Increment: ₹{Number(parseFloat(form.newCtc) - employee.ctc).toLocaleString('en-IN')}
-                  {' '}({((parseFloat(form.newCtc) - employee.ctc) / employee.ctc * 100).toFixed(1)}%)
-                </div>
-              )}
+              <IncrementHint from={current.ctc} to={formCtc} />
+              {salaryPrivate && <div className="form-hint">Payroll runs on the gross. Left empty, the CTC stays as it is.</div>}
             </div>
           </div>
           <div className="form-group">
@@ -1994,7 +2477,14 @@ function PromotionModal({ show, onClose, employee, tenantId, currentUserId, onSa
         </div>
       ) : loading ? (
         <div style={{ textAlign: 'center', padding: 40 }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
-      ) : history.length === 0 ? (
+      ) : (<>
+        {salaryPrivate && (
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', padding: '10px 14px', marginBottom: 12, border: '1px solid var(--border)', borderRadius: 8, fontSize: 13 }}>
+            <div><span style={{ color: 'var(--text-muted)' }}>Current Monthly Gross</span><br /><strong style={{ fontSize: 15 }}>{inr(current.gross)}</strong></div>
+            <div><span style={{ color: 'var(--text-muted)' }}>Current Monthly CTC</span><br /><strong style={{ fontSize: 15 }}>{inr(current.ctc)}</strong></div>
+          </div>
+        )}
+        {history.length === 0 ? (
         <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32 }}>
           <i className="fas fa-level-up-alt" style={{ fontSize: 28, marginBottom: 8, display: 'block' }} />
           No promotion history yet. Click "New Promotion / Increment" to record one.
@@ -2011,7 +2501,7 @@ function PromotionModal({ show, onClose, employee, tenantId, currentUserId, onSa
                   {new Date(p.effective_date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                   {i === 0 && <span className="badge badge-success" style={{ marginLeft: 8, fontSize: 10 }}>Latest</span>}
                 </strong>
-                {p.increment_amount > 0 && (
+                {!salaryPrivate && p.increment_amount > 0 && (
                   <span style={{ color: 'var(--success)', fontWeight: 700 }}>
                     +₹{Number(p.increment_amount).toLocaleString('en-IN')}
                   </span>
@@ -2024,9 +2514,16 @@ function PromotionModal({ show, onClose, employee, tenantId, currentUserId, onSa
                   <strong>{p.new_designation}</strong>
                 </div>
               )}
+              {p.old_gross && p.new_gross && (
+                <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 4 }}>
+                  Gross: {inr(p.old_gross)} → <strong>{inr(p.new_gross)}</strong>
+                  <ChangeTag from={p.old_gross} to={p.new_gross} />
+                </div>
+              )}
               {p.old_ctc && p.new_ctc && (
                 <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 4 }}>
-                  CTC: ₹{Number(p.old_ctc).toLocaleString('en-IN')} → <strong>₹{Number(p.new_ctc).toLocaleString('en-IN')}</strong>
+                  CTC: {inr(p.old_ctc)} → <strong>{inr(p.new_ctc)}</strong>
+                  {salaryPrivate && <ChangeTag from={p.old_ctc} to={p.new_ctc} />}
                 </div>
               )}
               {p.notes && <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>{p.notes}</div>}
@@ -2038,7 +2535,8 @@ function PromotionModal({ show, onClose, employee, tenantId, currentUserId, onSa
             </div>
           ))}
         </div>
-      )}
+        )}
+      </>)}
     </Modal>
   );
 }

@@ -157,11 +157,30 @@ export async function importHolidays(tenantId, holidays, outletId) {
   return { error };
 }
 
+export async function updateHoliday(holidayId, holiday) {
+  const { error } = await supabase
+    .from('holidays')
+    .update({
+      name: holiday.name,
+      date: holiday.date || holiday.holiday_date,
+      type: holiday.type || holiday.description || 'Public Holiday',
+    })
+    .eq('id', holidayId);
+  return { error };
+}
+
 export async function updateHolidayStatus(holidayId, status) {
   const { error } = await supabase
     .from('holidays')
     .update({ status })
     .eq('id', holidayId);
+  return { error };
+}
+
+export async function deleteHoliday(holidayId) {
+  // RLS turns a disallowed delete into "0 rows", not an error — report it.
+  const { data, error } = await supabase.from('holidays').delete().eq('id', holidayId).select('id');
+  if (!error && !data?.length) return { error: new Error('You are not allowed to delete this holiday.') };
   return { error };
 }
 
@@ -221,14 +240,18 @@ export async function fetchDashboardStats(tenantId, outletProfileIds = null) {
     advQuery = advQuery.in('profile_id', ids);
   }
 
-  const [empsRes, payrollRes, advRes] = await Promise.all([
+  const [empsRes, payrollRes, advRes, salRes] = await Promise.all([
     empsQuery,
     supabase.from('payrolls').select('id', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('status', 'Processed'),
     advQuery,
+    // A salary-private tenant keeps the gross in employee_salaries (payroll HR
+    // reads it; anyone else gets no rows, so their total stays the profile's).
+    supabase.from('employee_salaries').select('profile_id, gross').eq('tenant_id', tenantId),
   ]);
 
   const activeEmployees     = empsRes.data?.length || 0;
-  const totalCTC            = empsRes.data?.reduce((s, e) => s + (e.ctc || 0), 0) || 0;
+  const grossById           = Object.fromEntries((salRes.data || []).map((r) => [r.profile_id, Number(r.gross) || 0]));
+  const totalCTC            = empsRes.data?.reduce((s, e) => s + (grossById[e.id] ?? (e.ctc || 0)), 0) || 0;
   const processedPayrolls   = payrollRes.count || 0;
   const outstandingAdvances = advRes.data?.reduce((s, a) => s + (a.balance || 0), 0) || 0;
   const error               = empsRes.error || payrollRes.error || advRes.error;

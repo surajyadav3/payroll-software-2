@@ -72,7 +72,7 @@ export async function fetchRecentUpdates(tenantId, { profileId, limit = 8, exclu
         title: `New KRA: ${k.title}`,
         subtitle: k.scope === 'company' ? 'Company-wide KRA' : (k.profile ? `Assigned to ${fullName(k.profile)}` : 'New KRA assigned'),
         date: k.created_at,
-        link: '/performance/kras',
+        link: '/performance',
       });
     }
   }

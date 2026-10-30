@@ -6,21 +6,24 @@ import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
 import { listActiveEmployees } from '@/services/employeeService';
 import { fetchMyMonthAttendance, fetchEmployeeProfileInfo, fetchTeamAttendance, fetchAllTenantAttendance } from '@/services/attendanceService';
+import { fetchHolidaysInRange } from '@/services/holidayService';
+import { fetchTenantLeaveBalances } from '@/services/leaveLedgerService';
 import {
   fmt, fmtTime12, fmtDuration, dateStr, monthLabel, fullName, scopedToOutlet, isTenantWeeklyOff,
-  isShortDay, MONTHLY_LATE_HIGHLIGHT_LIMIT, toTitleCase, probationInfo, isRaniwalaTenant, raniwalaPayableOtHours,
-  earlyLateKindLabel, earlyLateDayNote,
+  holidayForEmployee, isBeforeJoining, isShortDay, MONTHLY_LATE_HIGHLIGHT_LIMIT, toTitleCase, probationInfo, isRaniwalaTenant, raniwalaPayableOtHours,
+  earlyLateKindLabel, earlyLateDayNote, comparePunches,
 } from '@/lib/helpers';
 import ExtraHoursCell from '@/components/ExtraHoursCell';
+import { AttendanceContent } from '@/pages/employee/MyAttendancePage';
 
 function getFirstIn(punches) {
   return (punches || [])
     .filter(p => p.punch_type === 'in')
-    .sort((a, b) => a.punch_time.localeCompare(b.punch_time))[0]?.punch_time || null;
+    .sort(comparePunches)[0]?.punch_time || null;
 }
 
 function getLastOut(punches) {
-  const outs = (punches || []).filter(p => p.punch_type === 'out').sort((a, b) => a.punch_time.localeCompare(b.punch_time));
+  const outs = (punches || []).filter(p => p.punch_type === 'out').sort(comparePunches);
   return outs[outs.length - 1]?.punch_time || null;
 }
 
@@ -31,11 +34,11 @@ function getLastOut(punches) {
 function getFirstInSource(punches) {
   return (punches || [])
     .filter(p => p.punch_type === 'in')
-    .sort((a, b) => a.punch_time.localeCompare(b.punch_time))[0]?.source || null;
+    .sort(comparePunches)[0]?.source || null;
 }
 
 function getLastOutSource(punches) {
-  const outs = (punches || []).filter(p => p.punch_type === 'out').sort((a, b) => a.punch_time.localeCompare(b.punch_time));
+  const outs = (punches || []).filter(p => p.punch_type === 'out').sort(comparePunches);
   return outs[outs.length - 1]?.source || null;
 }
 
@@ -46,6 +49,7 @@ const STATUS_COLOR = {
   Mispunch: 'var(--danger)',
   Absent: 'var(--danger)',
   Leave: 'var(--purple)',
+  Holiday: 'var(--info, #0ea5e9)',
   'Pending Approval': 'var(--warning)',
 };
 
@@ -60,16 +64,22 @@ export default function EmployeeCalendarPage() {
   // the tenant alone.
   const outletById = Object.fromEntries(outlets.map((o) => [o.id, o]));
   const [viewMode, setViewMode] = useState('employee'); // 'employee' | 'date'
+  // By-employee layout: 'table' (HR day list) or 'calendar' (the employee's
+  // own My Attendance screen, exactly as they see it).
+  const [empLayout, setEmpLayout] = useState('table');
   const [employees, setEmployees] = useState([]);
   const [selectedId, setSelectedId] = useState('');
   const [records, setRecords] = useState([]);
+  const [monthHolidays, setMonthHolidays] = useState([]);
   const [empProfile, setEmpProfile] = useState(null);
+  const [earnedLeave, setEarnedLeave] = useState(null);
   const [loadingEmps, setLoadingEmps] = useState(true);
   const [loading, setLoading] = useState(false);
 
   // By-date mode: only absent/late employees for one selected date
   const [dateForList, setDateForList] = useState(dateStr(now));
   const [dateRecords, setDateRecords] = useState([]);
+  const [dateHolidays, setDateHolidays] = useState([]);
   const [loadingDateList, setLoadingDateList] = useState(false);
   const [dateMonthAtt, setDateMonthAtt] = useState([]); // whole calendar month of dateForList, all employees — for the >3-late highlight
   const [viewMonth, setViewMonth] = useState(now.getMonth()); // 0-based
@@ -122,6 +132,21 @@ export default function EmployeeCalendarPage() {
     fetchEmployeeProfileInfo(selectedId).then(({ profile }) => setEmpProfile(profile));
   }, [selectedId]);
 
+  // Raniwala: the employee's Earned Leave balance today (same ledger as Leave
+  // Balances and the app); Comp Off comes with the profile above.
+  useEffect(() => {
+    setEarnedLeave(null);
+    if (!selectedId || !tenant || !isRaniwalaTenant(tenant)) return;
+    let cancelled = false;
+    fetchTenantLeaveBalances(tenant.id, [selectedId]).then(({ data, error }) => {
+      if (cancelled) return;
+      if (error) return showToast('Could not load leave balance: ' + error.message, 'error');
+      const rows = data.filter((b) => b.leave_type && !b.leave_type.is_unlimited && /earned/i.test(b.leave_type.name));
+      setEarnedLeave(rows.reduce((s, b) => s + Number(b.balance || 0), 0));
+    });
+    return () => { cancelled = true; };
+  }, [selectedId, tenant]);
+
   // When employee or month/year changes: fetch that month's records
   useEffect(() => {
     if (!selectedId) return;
@@ -132,15 +157,26 @@ export default function EmployeeCalendarPage() {
     }).finally(() => setLoading(false));
   }, [selectedId, viewMonth, viewYear]);
 
+  // The month's holidays — a holiday of the employee's outlet is not an absence.
+  useEffect(() => {
+    if (!tenant) return;
+    fetchHolidaysInRange(tenant.id, dateStr(new Date(viewYear, viewMonth, 1)), dateStr(new Date(viewYear, viewMonth + 1, 0)))
+      .then(({ data }) => setMonthHolidays(data || []));
+  }, [tenant, viewMonth, viewYear]);
+
   // By-date mode: fetch every employee's attendance for the selected date and
   // keep only Absent/Late — the reverse of the by-employee view above (one
   // date, many employees, instead of one employee, many dates).
   useEffect(() => {
     if (!tenant || viewMode !== 'date' || !dateForList) return;
     setLoadingDateList(true);
-    fetchTeamAttendance(tenant.id, dateForList).then(({ records: recs, error }) => {
+    Promise.all([
+      fetchTeamAttendance(tenant.id, dateForList),
+      fetchHolidaysInRange(tenant.id, dateForList, dateForList),
+    ]).then(([{ records: recs, error }, holRes]) => {
       if (error) showToast(error.message, 'error');
       else setDateRecords(scopedToOutlet(recs || [], outletProfileIds, 'profile_id'));
+      setDateHolidays(holRes.data || []);
     }).finally(() => setLoadingDateList(false));
   }, [tenant, viewMode, dateForList, outletProfileIds]);
 
@@ -165,13 +201,15 @@ export default function EmployeeCalendarPage() {
     const byProfile = Object.fromEntries(dateRecords.map((r) => [r.profile_id, r]));
     const listDay = new Date(dateForList);
     return employees
+      .filter((emp) => !isBeforeJoining(emp, dateForList))
       .map((emp) => {
         const rec = byProfile[emp.id];
         // No punch on the employee's own effective weekly-off day (outlet
         // override, e.g. Raniwala's Delhi off Monday, falling back to the
-        // tenant default) is a weekend, not an absence.
-        const isWeekend = !rec && isTenantWeeklyOff(listDay, tenant, outletById[emp.outlet_id]);
-        const status = rec?.status || (isWeekend ? 'Weekend' : 'Absent');
+        // tenant default) or on their outlet's holiday is not an absence.
+        const isWeekend = !rec && isTenantWeeklyOff(listDay, tenant, outletById[emp.outlet_id], emp);
+        const holiday = !rec && holidayForEmployee(dateHolidays, dateForList, emp, outletById[emp.outlet_id]);
+        const status = rec?.status || (holiday ? 'Holiday' : isWeekend ? 'Weekend' : 'Absent');
         const lateThisMonth = dateMonthLateCountByProfile[emp.id] || 0;
         return {
           emp, status,
@@ -220,7 +258,15 @@ export default function EmployeeCalendarPage() {
     return opts;
   };
 
+  // Selected employee's own outlet — its weekly_off_days override (e.g.
+  // Raniwala's Delhi outlet off Monday) takes precedence over the tenant
+  // default (Sunday) for every weekend computation below.
+  const selectedEmp = employees.find((e) => e.id === selectedId);
+  const selectedOutlet = outletById[selectedEmp?.outlet_id];
+  const raniwala = isRaniwalaTenant(tenant);
+
   // Build days for the selected month, latest first, skipping future dates
+  // and the days before the employee joined.
   const buildDays = () => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
@@ -229,6 +275,7 @@ export default function EmployeeCalendarPage() {
       const cur = new Date(viewYear, viewMonth, d);
       if (cur > today) continue;
       const ds = dateStr(cur);
+      if (isBeforeJoining(selectedEmp, ds)) continue;
       days.push({ date: ds, rec: records.find(r => r.date === ds) || null, dayObj: cur });
     }
     return days;
@@ -236,22 +283,23 @@ export default function EmployeeCalendarPage() {
 
   const days = buildDays();
 
-  // Selected employee's own outlet — its weekly_off_days override (e.g.
-  // Raniwala's Delhi outlet off Monday) takes precedence over the tenant
-  // default (Sunday) for every weekend computation below.
-  const selectedEmp = employees.find((e) => e.id === selectedId);
-  const selectedOutlet = outletById[selectedEmp?.outlet_id];
-  const raniwala = isRaniwalaTenant(tenant);
+  // A day with no attendance row: the employee's outlet holiday, their weekly
+  // off, else an absence.
+  const dayStatus = (rec, dayObj, date) => rec?.status
+    || (holidayForEmployee(monthHolidays, date, selectedEmp, selectedOutlet) ? 'Holiday'
+      : isTenantWeeklyOff(dayObj, tenant, selectedOutlet, selectedEmp) ? 'Weekend' : 'Absent');
 
   // Month summary stats. An untouched weekly off is skipped, but one the
   // employee actually punched on counts like any other worked day.
   const stats = { present: 0, absent: 0, halfDay: 0, late: 0, leave: 0, earlyLate: 0, mispunch: 0, otHours: 0, compOff: 0 };
-  days.forEach(({ rec, dayObj }) => {
+  days.forEach(({ rec, dayObj, date }) => {
     if (rec) {
-      if (selectedEmp?.overtime_applicable) stats.otHours += raniwalaPayableOtHours(rec.total_hours);
+      if (selectedEmp?.overtime_applicable) {
+        stats.otHours += raniwalaPayableOtHours(rec.total_hours, isTenantWeeklyOff(dayObj, tenant, selectedOutlet, selectedEmp));
+      }
       stats.compOff += Number(rec.comp_off_credit) || 0;
     }
-    if (!rec && isTenantWeeklyOff(dayObj, tenant, selectedOutlet)) return;
+    if (!rec && dayStatus(rec, dayObj, date) !== 'Absent') return;
     const s = rec?.status;
     if (s === 'Present') stats.present++;
     else if (s === 'Late') { stats.present++; stats.late++; }
@@ -273,11 +321,10 @@ export default function EmployeeCalendarPage() {
       ['Date', 'Day', 'Status', 'Clock In', 'Clock Out', 'Hours', 'Early/Late'],
     ];
     days.forEach(({ date, rec, dayObj }) => {
-      const isWeekend = isTenantWeeklyOff(dayObj, tenant, selectedOutlet);
       wsData.push([
         date,
         dayObj.toLocaleDateString('en-IN', { weekday: 'short' }),
-        rec?.status || (isWeekend ? 'Weekend' : 'Absent'),
+        dayStatus(rec, dayObj, date),
         rec ? (getFirstIn(rec.punches) || '') : '',
         rec ? (getLastOut(rec.punches) || '') : '',
         rec?.total_hours ? fmtDuration(rec.total_hours) : '',
@@ -455,6 +502,17 @@ export default function EmployeeCalendarPage() {
           </div>
 
           {selectedId && (
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button className={`btn btn-sm ${empLayout === 'table' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setEmpLayout('table')}>
+                <i className="fas fa-table-list" style={{ marginRight: 6 }} />Table
+              </button>
+              <button className={`btn btn-sm ${empLayout === 'calendar' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setEmpLayout('calendar')} title="The employee's own My Attendance calendar, exactly as they see it">
+                <i className="fas fa-calendar-days" style={{ marginRight: 6 }} />As Employee Sees
+              </button>
+            </div>
+          )}
+
+          {selectedId && empLayout === 'table' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Month:</span>
               <select
@@ -503,6 +561,22 @@ export default function EmployeeCalendarPage() {
               </span>
             );
           })()}
+          {raniwala && selectedId && earnedLeave !== null && [
+            ['fa-umbrella-beach', 'Earned Leave', earnedLeave],
+            ['fa-business-time', 'Comp Off', Number(empProfile?.comp_off_balance || 0)],
+          ].map(([icon, label, bal]) => {
+            const tone = bal < 0 ? 'var(--danger)' : bal === 0 ? 'var(--text-muted)' : 'var(--purple)';
+            return (
+              <span key={label} title={`${label} balance today`} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                color: tone, border: `1px solid ${tone}`, borderRadius: 20,
+                padding: '3px 12px', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+              }}>
+                <i className={`fas ${icon}`} />
+                {label} balance: {Number.isInteger(bal) ? bal : bal.toFixed(1).replace(/\.0$/, '')}
+              </span>
+            );
+          })}
         </div>
 
         {!selectedId && (
@@ -512,11 +586,24 @@ export default function EmployeeCalendarPage() {
           </div>
         )}
 
-        {selectedId && loading && (
+        {selectedId && empLayout === 'table' && loading && (
           <div style={{ textAlign: 'center', padding: 60 }}><div className="spinner" /></div>
         )}
 
-        {selectedId && !loading && (
+        {selectedId && empLayout === 'calendar' && selectedEmp && (
+          <div style={{ padding: '16px 4px 4px' }}>
+            <AttendanceContent
+              key={selectedId}
+              employee={selectedEmp}
+              readOnly
+              initialMonth={viewMonth}
+              initialYear={viewYear}
+              onMonthChange={(m, y) => { setViewMonth(m); setViewYear(y); }}
+            />
+          </div>
+        )}
+
+        {selectedId && empLayout === 'table' && !loading && (
           <>
             {/* Stats bar */}
             <div style={{ display: 'flex', gap: 28, padding: '14px 20px', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
@@ -573,17 +660,17 @@ export default function EmployeeCalendarPage() {
                       </td>
                     </tr>
                   ) : days.map(({ date, rec, dayObj }) => {
-                    const isWeekend = isTenantWeeklyOff(dayObj, tenant, selectedOutlet);
+                    const isWeekend = isTenantWeeklyOff(dayObj, tenant, selectedOutlet, selectedEmp);
                     const dayName = dayObj.toLocaleDateString('en-IN', { weekday: 'short' });
                     const clockIn = rec ? getFirstIn(rec.punches) : null;
                     const clockOut = rec ? getLastOut(rec.punches) : null;
                     const clockInSource = rec ? getFirstInSource(rec.punches) : null;
                     const clockOutSource = rec ? getLastOutSource(rec.punches) : null;
-                    const status = rec?.status || (isWeekend ? 'Weekend' : 'Absent');
+                    const status = dayStatus(rec, dayObj, date);
                     const color = STATUS_COLOR[status];
 
                     return (
-                      <tr key={date} style={isWeekend && !rec ? { opacity: 0.55 } : undefined}>
+                      <tr key={date} style={!rec && (status === 'Weekend' || status === 'Holiday') ? { opacity: 0.55 } : undefined}>
                         <td style={{ fontFamily: 'monospace', fontSize: 13 }}>{date}</td>
                         <td style={{ fontSize: 12, color: isWeekend ? 'var(--text-muted)' : undefined }}>{dayName}</td>
                         <td>
@@ -610,15 +697,15 @@ export default function EmployeeCalendarPage() {
                           )}
                         </td>
                         <td
-                          style={isShortDay(rec?.total_hours) ? { fontSize: 12, color: 'var(--danger)', fontWeight: 700 } : { fontSize: 12, color: 'var(--text-muted)' }}
-                          title={isShortDay(rec?.total_hours) ? 'Worked less than 8 hr 30 min' : undefined}
+                          style={(!isWeekend && isShortDay(rec?.total_hours)) ? { fontSize: 12, color: 'var(--danger)', fontWeight: 700 } : { fontSize: 12, color: 'var(--text-muted)' }}
+                          title={(!isWeekend && isShortDay(rec?.total_hours)) ? 'Worked less than 8 hr 30 min' : undefined}
                         >
                           {rec?.total_hours ? fmtDuration(rec.total_hours) : '—'}
-                          {isShortDay(rec?.total_hours) && <i className="fas fa-triangle-exclamation" style={{ marginLeft: 6 }} />}
+                          {(!isWeekend && isShortDay(rec?.total_hours)) && <i className="fas fa-triangle-exclamation" style={{ marginLeft: 6 }} />}
                         </td>
                         {raniwala && (
                           <td style={{ fontSize: 12 }}>
-                            <ExtraHoursCell totalHours={rec?.total_hours} overtime={selectedEmp?.overtime_applicable} compOffCredit={Number(rec?.comp_off_credit) || 0} />
+                            <ExtraHoursCell totalHours={rec?.total_hours} overtime={selectedEmp?.overtime_applicable} compOffCredit={Number(rec?.comp_off_credit) || 0} offDay={isWeekend} />
                           </td>
                         )}
                         <td style={{ textAlign: 'center' }}>

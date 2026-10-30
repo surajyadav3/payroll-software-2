@@ -1,0 +1,7 @@
+/* HR's birthday card (BirthdayCard.jsx). The blush square shows while it draws. */
+.bday-card { position: relative; width: 100%; max-width: 520px; }
+.bday-card canvas {
+  display: block; width: 100%; height: auto; aspect-ratio: 1;
+  border-radius: 14px; background: #FFF7F9; border: 1px solid var(--border);
+}
+.bday-card-save { position: absolute; right: 10px; bottom: 10px; background: var(--surface); }

@@ -1,5 +1,5 @@
 import React from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import Header from '@/components/Header';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/context/FeatureContext';
@@ -9,7 +9,6 @@ import { AttendanceContent } from './MyAttendancePage';
 import { RegularizeContent } from './MyRegularizeRequestsPage';
 import { WfhContent } from './MyWfhRequestsPage';
 import { LeaveContent } from './MyLeavesPage';
-import { PerformanceContent } from '@/pages/dashboard/PerformancePage';
 import { OneOnOnesContent } from '@/pages/dashboard/OneOnOnesPage';
 import { FeedbackContent } from '@/pages/dashboard/FeedbackPage';
 import { PIPContent } from '@/pages/dashboard/PIPPage';
@@ -17,7 +16,6 @@ import { MyTrainingContent } from './MyTrainingPage';
 import { MyOnboardingContent } from './MyOnboardingPage';
 import { MyOffboardingContent } from './MyOffboardingPage';
 import { MyAssetsContent } from './MyAssetsPage';
-import { MyProjectsContent } from './MyProjectsPage';
 
 const ATTENDANCE_SUBTABS = [
   { key: 'log', label: 'Log' },
@@ -26,7 +24,7 @@ const ATTENDANCE_SUBTABS = [
 ];
 
 const PERFORMANCE_SUBTABS = [
-  { key: 'workspace', label: 'My Performance' },
+  { key: 'workspace', label: 'Goals, KPIs & Reviews' },
   { key: 'oneonones', label: '1:1 Meetings', featureKey: 'performance_one_on_ones' },
   { key: 'feedback', label: 'Feedback', featureKey: 'performance_feedback' },
   { key: 'pip', label: 'PIP', featureKey: 'performance_pip' },
@@ -44,8 +42,22 @@ const EXTRA_TABS = [
   { key: 'onboarding', label: 'Onboarding', featureKey: 'onboarding', Content: MyOnboardingContent },
   { key: 'offboarding', label: 'Offboarding', featureKey: 'offboarding', Content: MyOffboardingContent },
   { key: 'assets', label: 'Assets', featureKey: 'assets', Content: MyAssetsContent },
-  { key: 'projects', label: 'Projects', featureKey: 'projects', Content: MyProjectsContent },
 ];
+
+// Goals, KPIs and reviews have their own screen (Performance in the sidebar); this tab points to it.
+function PerformanceLink() {
+  return (
+    <div className="page-content">
+      <div className="card" style={{ padding: 24, maxWidth: 560 }}>
+        <h3 style={{ margin: 0, fontSize: 16 }}>Your goals, KPIs and reviews</h3>
+        <p style={{ margin: '8px 0 16px', fontSize: 14, color: 'var(--text-secondary)' }}>
+          Set and track your goals, enter your monthly KPI results, write your self review and see your results — all on the Performance page.
+        </p>
+        <Link to="/performance" className="btn btn-primary"><i className="fas fa-trophy" /> Open Performance</Link>
+      </div>
+    </div>
+  );
+}
 
 function SubTabs({ items, active, onChange }) {
   return (
@@ -128,7 +140,7 @@ export default function MePage() {
           <div className="subtab-bar-wrap">
             <SubTabs items={performanceTabs} active={perfSubtab} onChange={setPerfSubtab} />
           </div>
-          {perfSubtab === 'workspace' && <PerformanceContent defaultSection="Scorecards" />}
+          {perfSubtab === 'workspace' && <PerformanceLink />}
           {perfSubtab === 'oneonones' && <OneOnOnesContent />}
           {perfSubtab === 'feedback' && <FeedbackContent />}
           {perfSubtab === 'pip' && <PIPContent />}

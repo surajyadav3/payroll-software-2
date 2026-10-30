@@ -10,18 +10,27 @@ import {
   listMyRegularizeRequests,
 } from '@/services/attendanceService';
 import { listHolidays, getOutlet } from '@/services/tenantService';
-import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel, isTenantWeeklyOff, regularizeMinDate, regularizeWindowLabel, earlyLateGraceNotice, earlyLateDayNote } from '@/lib/helpers';
+import { todayStr, dateStr, fmtTime12, fmtDuration, monthLabel, isTenantWeeklyOff, holidayForEmployee, isBeforeJoining, regularizeMinDate, regularizeWindowLabel, earlyLateGraceNotice, earlyLateDayNote, comparePunches, fmtPunchTime12 } from '@/lib/helpers';
 import RegularizeExtensionNotice from '@/components/RegularizeExtensionNotice';
+import { useOnAttendanceChanged } from '@/lib/attendanceEvents';
 
 const REQ_COLOR = { Approved: 'var(--success)', Rejected: 'var(--danger)', Pending: 'var(--warning)' };
 
-export function AttendanceContent() {
-  const { profile, tenant } = useAuth();
-  const [attMonth, setAttMonth]       = useState(new Date().getMonth());
-  const [attYear, setAttYear]         = useState(new Date().getFullYear());
+// `employee` lets HR open this exact employee view for someone else (Employee
+// Calendar → "As Employee Sees"); `readOnly` then hides the regularize action,
+// which only the employee files for themselves.
+export function AttendanceContent({ employee = null, readOnly = false, initialMonth, initialYear, onMonthChange } = {}) {
+  const { profile: authProfile, tenant } = useAuth();
+  const profile = employee || authProfile;
+  const [attMonth, setAttMonth]       = useState(initialMonth ?? new Date().getMonth());
+  const [attYear, setAttYear]         = useState(initialYear ?? new Date().getFullYear());
+  const [selectedDate, setSelectedDate] = useState(() => (
+    initialMonth == null || (initialMonth === new Date().getMonth() && initialYear === new Date().getFullYear())
+      ? todayStr()
+      : `${initialYear}-${String(initialMonth + 1).padStart(2, '0')}-01`
+  ));
   const [myRecords, setMyRecords]     = useState([]);
   const [holidays, setHolidays]       = useState([]);
-  const [selectedDate, setSelectedDate] = useState(todayStr());
   // Own outlet — its weekly_off_days (e.g. Raniwala's Delhi outlet off Monday
   // instead of the tenant-wide Sunday) overrides the tenant default and must
   // be used for this employee's own "Weekend" marking, not the tenant alone.
@@ -67,6 +76,10 @@ export function AttendanceContent() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [fetchMyAttendance, fetchMyReqs]);
 
+  // ...and at once while the page is open (own view only: the feed is the
+  // signed-in person's notifications).
+  useOnAttendanceChanged(() => { fetchMyAttendance(); fetchMyReqs(); }, !employee);
+
   const fetchHolidayData = useCallback(async () => {
     if (!tenant) return;
     const { data, error } = await listHolidays(tenant.id, profile?.outlet_id);
@@ -76,11 +89,9 @@ export function AttendanceContent() {
 
   useEffect(() => { fetchHolidayData(); }, [fetchHolidayData]);
 
-  const getHolidayDate = (h) => h.holiday_date || h.date;
-
   const openReqModal = () => {
     const dayPunches = [...(myRecords.find((r) => r.date === selectedDate)?.punches || [])]
-      .sort((a, b) => a.punch_time.localeCompare(b.punch_time));
+      .sort(comparePunches);
     const firstIn = dayPunches.find((p) => p.punch_type === 'in')?.punch_time;
     const lastOut = [...dayPunches].reverse().find((p) => p.punch_type === 'out')?.punch_time;
     setReqForm({
@@ -122,6 +133,7 @@ export function AttendanceContent() {
     if (m > 11) { m = 0; y++; } if (m < 0) { m = 11; y--; }
     setAttMonth(m);
     setAttYear(y);
+    onMonthChange?.(m, y);
     // reset selected date to 1st of the new month
     const newMonthStr = `${y}-${String(m + 1).padStart(2, '0')}-01`;
     setSelectedDate(newMonthStr);
@@ -137,6 +149,8 @@ export function AttendanceContent() {
   // myRequests is newest-first, so the first one seen per date is the latest.
   const latestReqByDate = {};
   for (const r of myRequests) if (!latestReqByDate[r.date]) latestReqByDate[r.date] = r;
+  // Own outlet's holidays (company-wide ones only if the outlet has holidays on).
+  const approvedHolidays = holidays.filter((h) => h.status === 'Approved');
 
   ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach((d) =>
     calendarCells.push(<div className="att-cal-header" key={'h-' + d}>{d}</div>)
@@ -149,17 +163,18 @@ export function AttendanceContent() {
     const ds       = dateStr(date);
     const isToday  = ds === todayDateStr;
     const isFuture = date > today;
-    const isWeekend = isTenantWeeklyOff(date, tenant, myOutlet);
+    const isWeekend = isTenantWeeklyOff(date, tenant, myOutlet, profile);
     const rec      = myRecords.find((r) => r.date === ds);
-    const holiday  = holidays.find((h) => getHolidayDate(h) === ds && h.status === 'Approved');
+    const holiday  = holidayForEmployee(approvedHolidays, ds, profile, myOutlet);
     const dayReq   = latestReqByDate[ds];
 
     let cls = '';
     let hoursStr = '';
     // A day with punches shows what was worked even on a holiday / weekly off
     // (that work earns comp off) — only an untouched off day shows as off.
+    // Before joining the calendar is blank: no absence, no holiday.
     const worked   = rec && (Number(rec.total_hours) > 0 || rec.status === 'Pending Approval');
-    if (isFuture)       { cls = 'future'; }
+    if (isFuture || (!rec && isBeforeJoining(profile, ds))) { cls = 'future'; }
     else if (worked)    { cls = rec.status?.toLowerCase().replace(/\s/g, '-') || 'present'; hoursStr = fmtDuration(rec.total_hours); }
     else if (holiday)   { cls = 'holiday'; hoursStr = holiday.name; }
     else if (isWeekend) { cls = 'weekend'; }
@@ -204,9 +219,9 @@ export function AttendanceContent() {
   const summary = { present: 0, absent: 0, halfDay: 0, late: 0, leaves: 0, totalHours: 0, earlyLate: 0, earlyLateGraced: 0, mispunch: 0 };
   for (let d = 1; d <= daysInMonth; d++) {
     const date = new Date(attYear, attMonth, d);
-    if (date > today || isTenantWeeklyOff(date, tenant, myOutlet)) continue;
+    if (date > today || isTenantWeeklyOff(date, tenant, myOutlet, profile)) continue;
     const ds = dateStr(date);
-    if (holidays.find((h) => getHolidayDate(h) === ds && h.status === 'Approved')) continue;
+    if (isBeforeJoining(profile, ds) || holidayForEmployee(approvedHolidays, ds, profile, myOutlet)) continue;
     const rec = myRecords.find((r) => r.date === ds);
     if (!rec?.status) { if (date < today) summary.absent++; continue; }
     if (rec.status === 'Present')  summary.present++;
@@ -223,10 +238,10 @@ export function AttendanceContent() {
   // ── Selected day data ────────────────────────────────────────────────────────
   const selectedRec  = myRecords.find((r) => r.date === selectedDate);
   const sortedPunches = selectedRec?.punches
-    ? [...selectedRec.punches].sort((a, b) => a.punch_time.localeCompare(b.punch_time))
+    ? [...selectedRec.punches].sort(comparePunches)
     : [];
   const selectedReqs = myRequests.filter((r) => r.date === selectedDate);
-  const canRequest = selectedDate && selectedDate <= todayStr() && selectedDate >= regularizeMinDate(tenant)
+  const canRequest = !readOnly && selectedDate &&selectedDate <= todayStr() && selectedDate >= regularizeMinDate(tenant)
     && !selectedReqs.some((r) => r.status === 'Pending' || r.status === 'Approved');
   const graceNotice = earlyLateGraceNotice(
     tenant, myRecords, attMonth === today.getMonth() && attYear === today.getFullYear(),
@@ -318,7 +333,7 @@ export function AttendanceContent() {
                       key={p.id || i}
                       className={`att-timeline-item ${p.punch_type === 'in' ? 'punch-in' : 'punch-out'}`}
                     >
-                      <span className="att-timeline-time">{fmtTime12(p.punch_time)}</span>
+                      <span className="att-timeline-time">{fmtPunchTime12(p)}</span>
                       <span className="att-timeline-label">
                         {p.punch_type === 'in' ? (i === 0 ? 'Clock In' : 'Resume') : 'Clock Out'}
                         {p.source === 'manual' && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-muted)' }}>(Regularized)</span>}

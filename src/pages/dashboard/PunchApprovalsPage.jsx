@@ -2,9 +2,12 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import Header from '@/components/Header';
 import OutletSelect from '@/components/OutletSelect';
 import { showToast } from '@/components/Toast';
-import { useOutletView } from '@/context/OutletViewContext';
+import BulkApproveBar, { BulkHeadCell, BulkRowCell } from '@/components/BulkApproveBar';
+import { useBulkApproval } from '@/hooks/useBulkApproval';
+import { useRequestOutletScope } from '@/context/OutletViewContext';
 import { listPunchApprovals, reviewPunches } from '@/services/punchApprovalService';
-import { fmt, fmtTime12, getInitials, getAvatarColor, scopedToOutlet } from '@/lib/helpers';
+import { fmt, fmtTime12, getInitials, getAvatarColor, scopedToOutlet, matchesSearch } from '@/lib/helpers';
+import { exportRequestSheet, fmtExportDateTime } from '@/lib/requestExport';
 
 const STATUS_FILTERS = [
   { key: 'pending', label: 'Pending' },
@@ -19,13 +22,15 @@ const STATUS_BADGE = { pending: 'badge-warning', approved: 'badge-success', reje
 // ESSL machine. Their hours only count once approved here. One row per
 // employee per day, so a clock-in and clock-out are reviewed together.
 export default function PunchApprovalsPage() {
-  const { outletProfileIds } = useOutletView();
+  const outletProfileIds = useRequestOutletScope();
   const [status, setStatus] = useState('pending');
   const [punches, setPunches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(null);
+  const [search, setSearch] = useState('');
 
   const fetchPunches = useCallback(async () => {
+    if (outletProfileIds === undefined) return;
     setLoading(true);
     try {
       const { data, error } = await listPunchApprovals(status);
@@ -50,8 +55,8 @@ export default function PunchApprovalsPage() {
       ...d,
       punches: d.punches.sort((a, b) => a.punch_time.localeCompare(b.punch_time)),
       pendingIds: d.punches.filter((p) => p.approval_status === 'pending').map((p) => p.punch_id),
-    }));
-  }, [punches]);
+    })).filter((d) => matchesSearch(search, d.employee_name, d.employee_code, d.department, d.outlet_name));
+  }, [punches, search]);
 
   const review = async (key, punchIds, approve) => {
     setActing(key);
@@ -67,7 +72,37 @@ export default function PunchApprovalsPage() {
     }
   };
 
-  const pendingDays = status === 'pending' ? days.length : null;
+  // Header count ignores the search box.
+  const pendingDays = status === 'pending' ? new Set(punches.map((p) => p.attendance_id)).size : null;
+
+  const bulk = useBulkApproval({
+    rows: days,
+    loading,
+    getId: (d) => d.attendance_id,
+    canAct: (d) => d.pendingIds.length > 0,
+    noun: 'day',
+    onDone: fetchPunches,
+    // review_punches takes a list, so every selected day goes in one call.
+    decideMany: (rows, approve) => reviewPunches(rows.flatMap((d) => d.pendingIds), approve),
+  });
+
+  const exportList = () => {
+    const label = STATUS_FILTERS.find((s) => s.key === status).label;
+    exportRequestSheet(days.map((d) => {
+      const reviewed = d.punches.find((p) => p.reviewed_at);
+      return {
+        'Emp Code': d.employee_code || '',
+        Employee: d.employee_name || '',
+        Department: d.department || '',
+        Outlet: d.outlet_name || '',
+        Date: fmt.date(d.date),
+        Punches: d.punches.map((p) => `${String(p.punch_type).toUpperCase()} ${fmtTime12(p.punch_time)} (${p.approval_status})`).join('; '),
+        Approver: d.approver_name || 'HR',
+        'Reviewed By': reviewed?.reviewed_by_name || '',
+        'Reviewed On': fmtExportDateTime(reviewed?.reviewed_at),
+      };
+    }), { sheet: `${label} Punches`, file: `${label} punches`, widths: [10, 24, 18, 16, 13, 50, 22, 22, 22] });
+  };
 
   return (
     <>
@@ -87,17 +122,29 @@ export default function PunchApprovalsPage() {
               {s.label}
             </button>
           ))}
+          <input
+            className="form-input"
+            style={{ maxWidth: 220 }}
+            placeholder="Search employee, EMP code…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
           <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 'auto' }}>
             <i className="fas fa-info-circle" style={{ marginRight: 6 }} />
             Punches made from the app or website. Hours count only after approval.
           </span>
+          <button className="btn btn-sm btn-outline" onClick={exportList} disabled={loading || days.length === 0}>
+            <i className="fas fa-file-excel" style={{ marginRight: 6 }} />Export
+          </button>
         </div>
 
         <div className="card">
+          <BulkApproveBar bulk={bulk} />
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
+                  <BulkHeadCell bulk={bulk} />
                   <th>Employee</th>
                   <th>Date</th>
                   <th>Punches</th>
@@ -111,12 +158,13 @@ export default function PunchApprovalsPage() {
                   <tr><td colSpan={6} style={{ textAlign: 'center', padding: 40 }}><div className="spinner" style={{ margin: '0 auto' }} /></td></tr>
                 ) : days.length === 0 ? (
                   <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>
-                    No {status !== 'all' ? status : ''} punches.
+                    No {status !== 'all' ? status : ''} punches{search.trim() ? ` for "${search.trim()}"` : ''}.
                   </td></tr>
                 ) : days.map((d) => {
                   const reviewed = d.punches.find((p) => p.reviewed_at);
                   return (
                     <tr key={d.attendance_id}>
+                      <BulkRowCell bulk={bulk} row={d} />
                       <td>
                         <div className="emp-cell">
                           <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(d.profile_id)})` }}>
@@ -160,7 +208,7 @@ export default function PunchApprovalsPage() {
                             <button
                               className="btn btn-sm btn-success"
                               title={`Approve ${d.pendingIds.length > 1 ? 'both punches' : 'punch'}`}
-                              disabled={acting === d.attendance_id}
+                              disabled={acting === d.attendance_id || bulk.busy}
                               onClick={() => review(d.attendance_id, d.pendingIds, true)}
                             >
                               <i className="fas fa-check" /> Approve
@@ -168,7 +216,7 @@ export default function PunchApprovalsPage() {
                             <button
                               className="btn btn-sm btn-danger"
                               title="Reject"
-                              disabled={acting === d.attendance_id}
+                              disabled={acting === d.attendance_id || bulk.busy}
                               onClick={() => review(d.attendance_id, d.pendingIds, false)}
                             >
                               <i className="fas fa-times" />

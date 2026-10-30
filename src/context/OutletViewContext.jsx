@@ -6,6 +6,7 @@ import { listOutlets } from '@/services/tenantService';
 const OutletViewContext = createContext({});
 
 const storageKey = (tenantId, profileId) => `outlet_view:${tenantId}:${profileId}`;
+const requestStorageKey = (tenantId, profileId) => `request_outlets:${tenantId}:${profileId}`;
 
 export function OutletViewProvider({ children }) {
   const { tenant, profile } = useAuth();
@@ -15,6 +16,11 @@ export function OutletViewProvider({ children }) {
   const [selectedOutletId, setSelectedOutletId] = useState(undefined); // undefined = not loaded yet
   const [outletProfileIds, setOutletProfileIds] = useState(null);
   const [ready, setReady] = useState(false);
+  // The Requests pages' own pick: any mix of ticked outlets (Set of ids), not
+  // the single app-wide outlet. null until a Requests page first asks for it,
+  // so nothing is fetched for it elsewhere.
+  const [requestOutletIds, setRequestOutletIds] = useState(null);
+  const [requestProfileIds, setRequestProfileIds] = useState(undefined); // undefined = loading, null = every outlet
 
   // Load outlets + restore the stored selection whenever the tenant changes.
   useEffect(() => {
@@ -79,6 +85,43 @@ export function OutletViewProvider({ children }) {
     setSelectedOutletId(id || null);
   }, [tenant?.id, profile?.id]);
 
+  // First Requests page opened: the stored ticks, else the app-wide outlet
+  // (Combined = every outlet ticked).
+  const initRequestOutlets = useCallback(() => {
+    if (!ready || requestOutletIds || !tenant?.id || !profile?.id) return;
+    const known = new Set(outlets.map((o) => o.id));
+    let ids = [];
+    try { ids = JSON.parse(localStorage.getItem(requestStorageKey(tenant.id, profile.id)) || '[]').filter((id) => known.has(id)); } catch { ids = []; }
+    if (!ids.length) ids = selectedOutletId && known.has(selectedOutletId) ? [selectedOutletId] : [...known];
+    setRequestOutletIds(new Set(ids));
+  }, [ready, requestOutletIds, tenant?.id, profile?.id, outlets, selectedOutletId]);
+
+  const selectRequestOutlets = useCallback((ids) => {
+    if (!tenant?.id || !profile?.id || !ids.size) return;
+    localStorage.setItem(requestStorageKey(tenant.id, profile.id), JSON.stringify([...ids]));
+    setRequestOutletIds(new Set(ids));
+  }, [tenant?.id, profile?.id]);
+
+  // Ticked outlets -> employee ids; every outlet ticked (or no outlets) = no
+  // filter. No-outlet staff are kept in, same as the single-outlet set above.
+  useEffect(() => {
+    if (!ready) return;
+    if (!canScope || !outlets.length) { setRequestProfileIds(null); return; }
+    if (!requestOutletIds) return;
+    if (outlets.every((o) => requestOutletIds.has(o.id))) { setRequestProfileIds(null); return; }
+    let cancelled = false;
+    setRequestProfileIds(undefined);
+    supabase
+      .from('profiles')
+      .select('id')
+      .eq('tenant_id', tenant.id)
+      .or(`outlet_id.in.(${[...requestOutletIds].join(',')}),outlet_id.is.null`)
+      .then(({ data }) => {
+        if (!cancelled) setRequestProfileIds(new Set((data || []).map((r) => r.id)));
+      });
+    return () => { cancelled = true; };
+  }, [ready, canScope, outlets, requestOutletIds, tenant?.id]);
+
   const selectedOutletName = selectedOutletId
     ? outlets.find((o) => o.id === selectedOutletId)?.name || ''
     : '';
@@ -94,7 +137,12 @@ export function OutletViewProvider({ children }) {
     ready,
     selectOutlet,
     refreshOutlets,
-  }), [outlets, selectedOutletId, selectedOutletName, outletProfileIds, needsSelection, ready, selectOutlet, refreshOutlets]);
+    requestOutletIds,
+    requestProfileIds,
+    initRequestOutlets,
+    selectRequestOutlets,
+  }), [outlets, selectedOutletId, selectedOutletName, outletProfileIds, needsSelection, ready, selectOutlet, refreshOutlets,
+    requestOutletIds, requestProfileIds, initRequestOutlets, selectRequestOutlets]);
 
   return (
     <OutletViewContext.Provider value={value}>
@@ -104,3 +152,11 @@ export function OutletViewProvider({ children }) {
 }
 
 export const useOutletView = () => useContext(OutletViewContext);
+
+// For the Requests pages: the ticked outlets' employee ids — a Set to filter
+// by, null for every outlet, undefined while it is still loading (skip the fetch).
+export function useRequestOutletScope() {
+  const { requestProfileIds, initRequestOutlets } = useContext(OutletViewContext);
+  useEffect(() => { initRequestOutlets?.(); }, [initRequestOutlets]);
+  return requestProfileIds;
+}

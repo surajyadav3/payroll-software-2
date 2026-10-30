@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { findUserByEmail } from "../_shared/findUserByEmail.ts";
+import { activeProfileIdsByMobile } from "../_shared/indianMobile.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -147,15 +148,14 @@ serve(async (req) => {
     // (often a placeholder p<digits>@phone.crewcore.internal address).
     let loginEmail = email;
     if (phoneDigits) {
-      const variants = [phoneDigits, `+91${phoneDigits}`, `91${phoneDigits}`, `0${phoneDigits}`, `+91 ${phoneDigits}`];
-      const { data: owners } = await db.from("profiles").select("id").in("phone", variants).eq("status", "Active").limit(2);
-      if (!owners || owners.length !== 1) {
+      const owners = await activeProfileIdsByMobile(db, phoneDigits);
+      if (owners.length !== 1) {
         return new Response(
           JSON.stringify({ error: "Couldn't match this number to one account. Please sign in with email or password." }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-      const { data: authUser } = await db.auth.admin.getUserById(owners[0].id);
+      const { data: authUser } = await db.auth.admin.getUserById(owners[0]);
       if (!authUser?.user?.email) {
         return new Response(
           JSON.stringify({ error: "This account can't use SMS login. Please contact your HR." }),

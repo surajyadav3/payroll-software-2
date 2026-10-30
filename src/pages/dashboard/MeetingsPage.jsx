@@ -4,10 +4,9 @@ import Header from '@/components/Header';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { listAssignablePeople, TASK_PRIORITIES } from '@/services/taskService';
 import {
   extractMeeting, cleanTranscript, listMeetingNotes, saveMeetingNotes, updateMeetingActionItems,
-  deleteMeetingNotes, createTaskFromActionItem,
+  deleteMeetingNotes, createTaskFromActionItem, listAssignablePeople, TASK_PRIORITIES,
 } from '@/services/aiService';
 import { fmt, fullName, todayStr } from '@/lib/helpers';
 

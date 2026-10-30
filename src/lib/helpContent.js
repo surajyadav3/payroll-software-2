@@ -123,26 +123,26 @@ export const HELP_TOPICS = [
   {
     id: 'tasks-overview', category: 'Tasks & projects', featureKey: 'tasks', roles: EVERYONE_STAFF,
     q: 'How do tasks work?',
-    a: 'Open Tasks from the sidebar.\n\n• My Tasks — work assigned to you.\n• Assigned by Me — tasks you gave to others.\n• My Team — tasks of people who report to you (managers only).\n• To Review — finished tasks waiting for your approval.\n\nRules: a task needs a due date before work starts, and the due date is locked after that — a manager sets a revised due date if it slips. Marking a task Blocked, or Done after its due date, asks for a reason. When you mark your task Done it goes to review (your named reviewer, the person who assigned it, or your manager) — add the link to the finished work, or a note if there is no document. They approve it or send it back with what is missing.\n\nOpen a task for sub-tasks, "waiting on" tasks, deliverable links, the linked KPI, its activity and every field change. Use "Paste tasks" to add many at once from Excel. Switch between list and board, group the list, and save filters as a view.',
-    link: '/tasks',
+    a: 'Open My Work from the sidebar.\n\n• Today — tiles for what is due today, overdue, blocked, waiting for review and for you to review; click a tile to see those tasks.\n• Board — your tasks as cards in Backlog, To do, In progress, Blocked, Pending review and Done; drag a card to move it.\n• To review — finished work waiting for your decision.\n• Calendar — your tasks by due date; drag an undated task onto a day.\n• Team workload — open work of the people who report to you.\n\nA task moves forward one step at a time: To do → In progress → Pending review → Done. It needs a due date before work starts, and that date is then fixed — a manager records a revised due date if it slips. Blocked, sent back, cancelled, reopened and late-finished tasks ask for a reason. When you complete a task it goes to its reviewer (the named reviewer, else the person who created it, else your manager) with a link to the work or a completion note; they approve it or send it back.\n\nOpen a task for its description, deliverable links, sub-tasks, the tasks it waits on, comments, the status timeline and every change.',
+    link: '/work/me',
   },
   {
     id: 'create-task', category: 'Tasks & projects', featureKey: 'tasks', roles: EVERYONE_STAFF,
     q: 'How do I create or assign a task?',
-    a: '1. Open Tasks and click New Task.\n2. Enter a title, optional description, priority and due date.\n3. Choose who it is for. Everyone can create tasks for themselves; managers can assign to people in their reporting team, and HR can assign to anyone.\n\nThe assignee is notified immediately.',
-    link: '/tasks',
+    a: '1. Open My Work (or Tasks & Projects) and click New task.\n2. Enter what needs doing, and optionally a project, assignee, reviewer, due date, stage and priority.\n3. Without a project it is a personal task: for yourself, or for someone in your reporting team (HR can assign to anyone). In a project, anyone who can see the project can be assigned.\n\nThe assignee is notified immediately. "Save as draft" keeps an unfinished task private until you add it.',
+    link: '/work/me',
   },
   {
     id: 'task-status', category: 'Tasks & projects', featureKey: 'tasks', roles: EVERYONE_STAFF,
     q: 'How do I update a task\'s status or add a comment?',
-    a: 'Change the status from the dropdown in the list, drag the card to another column on the board, or open the task to change it there. Statuses are To Do, In Progress, Blocked, Done and Cancelled (only the person who assigned it, or a manager, can cancel).\n\nOpen a task to add comments — the other person is notified, and the full history of status changes stays on the task.',
-    link: '/tasks',
+    a: 'Tick the circle next to a task to start it, and again to complete it; drag its card to another column on a board; or open the task and use the buttons at the top (Start, Blocked, Complete, Approve, Send back…). When a move needs something — a due date, a reason, a link to the work — a small box asks for exactly that.\n\nOnly the person who created the task, or a manager, can cancel or reopen it.\n\nOpen a task to comment; type @ and a name to mention a colleague. The assignee and the creator are notified.',
+    link: '/work/me',
   },
   {
     id: 'task-reminders', category: 'Tasks & projects', featureKey: 'tasks', roles: EVERYONE_STAFF,
     q: 'Will I be reminded about due tasks?',
     a: 'Yes. Every morning at 9:00 AM you get one reminder listing your tasks that are due today, due tomorrow or overdue. If you assigned a task that is now overdue, you get a reminder too. Your company may also send these to Slack, email or WhatsApp.',
-    link: '/tasks',
+    link: '/work/me',
   },
   {
     id: 'meeting-notes', category: 'Tasks & projects', featureKey: 'ai_meetings', roles: EVERYONE_STAFF,
@@ -157,9 +157,15 @@ export const HELP_TOPICS = [
   },
   {
     id: 'projects', category: 'Tasks & projects', featureKey: 'projects',
-    q: 'What is the difference between Projects and Tasks?',
-    a: 'A project groups people and tasks for a piece of work with a start and end date; HR and managers create projects and add members. Project tasks also appear on your Tasks page with the project name, so you can track everything in one place.',
-    link: { admin: '/projects', manager: '/projects', employee: '/me?tab=projects' },
+    q: 'What is a project?',
+    a: 'A project is a board of tasks with its own chat channel — for a team, an outlet launch or anything with several steps. Open Tasks & Projects → Projects and click New project: give it a name, a short key (its tasks are numbered KEY-1, KEY-2…), a colour, who can see it (everyone, or members only) and its members.\n\nInside a project you get the Board, a List, the project Chat and its Members. Project tasks also show up in each assignee\'s My Work.',
+    link: '/work',
+  },
+  {
+    id: 'messages', category: 'Tasks & projects', featureKey: 'team_chat', roles: EVERYONE_STAFF,
+    q: 'How do Messages work?',
+    a: 'Open Messages from the sidebar. Everyone is in #general; you can create more channels (open to everyone, or invited only), every project has its own channel, and you can message one colleague or a small group directly.\n\nType @ and a name to mention someone — they are notified. Hover a message to react, reply in a thread, edit or delete your own message, or choose "Make it a task" to turn it into a task that stays linked to the conversation. Mentions lists every message that mentions you. New messages appear live.',
+    link: '/work/chat',
   },
 
   // ── Pay & finance ───────────────────────────────────────────────────────
@@ -185,14 +191,14 @@ export const HELP_TOPICS = [
   {
     id: 'goals', category: 'Performance', featureKey: 'performance_kras',
     q: 'How do I set my goals and track performance?',
-    a: 'Open Performance → Goals & Scorecards. Your goals (KRAs/KPIs) are agreed with your manager; submit monthly updates on progress under Monthly Updates. Your manager reviews them and HR runs the review cycles.',
-    link: '/performance/kras',
+    a: 'Open Performance.\n\n• My goals — when HR opens a review cycle, add 3–5 goals. Give each a weight (they add up to 100%) and a way to measure it, then Submit for approval; your manager approves the plan or sends it back. Once approved, use Update progress to record where each measure stands.\n• KPIs — results measured every month against a target. Enter what you expect and what you achieved, then submit the month; your manager confirms it or returns it with a reason.',
+    link: '/performance',
   },
   {
     id: 'reviews', category: 'Performance', featureKey: 'performance_reviews',
     q: 'How do performance reviews work?',
-    a: 'When HR opens a review cycle you complete your self-review, then your manager adds their review and rating. You can see the outcome under Performance → Reviews once it is shared.',
-    link: '/performance/reviews',
+    a: 'HR runs a review cycle through five stages: goal setting, self review, manager review, calibration and results. Open Performance → My reviews when the self-review stage opens, rate yourself on each goal, competency and question, and submit. Your manager then writes their review. When HR shares the results you see your final rating there and acknowledge it — or record a disagreement for HR to look at.',
+    link: '/performance',
   },
   {
     id: 'feedback-1on1', category: 'Performance', featureKey: 'performance_feedback',
@@ -249,8 +255,8 @@ export const HELP_TOPICS = [
   {
     id: 'team-tasks', category: 'For managers', roles: MANAGERS, featureKey: 'tasks',
     q: 'How do I track my team\'s work?',
-    a: 'Open Tasks → My Team to see every task assigned to people who report to you, with filters for status, priority and assignee. The Overdue count at the top shows what needs attention.',
-    link: '/tasks',
+    a: 'Open My Work → Team workload for one row per person who reports to you: overdue, this week, next week, later, blocked and in review. Click Open on a row (or use the "Me" picker at the top) to look at that person\'s dashboard. To review lists the finished tasks waiting for your approval — A approves, R sends back.',
+    link: '/work/me',
   },
 
   // ── For HR / admin ──────────────────────────────────────────────────────

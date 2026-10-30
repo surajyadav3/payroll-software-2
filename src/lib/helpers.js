@@ -329,17 +329,21 @@ export function earlyLateKindLabel(kind) {
 
 /**
  * One day's late arrival / early left line (20261027_2). A graced day is
- * Present, except late arrival AND early left: the grace covers one, the
- * other goes by hours (Gayatri 8 Oct: Half Day). A day without the grace
- * (already used, or past the shift's limit) goes by hours.
+ * Present. Late arrival AND early left on one day takes no grace and is
+ * Half Day (20261028_6). A day without the grace (already used, or past
+ * the shift's limit) goes by hours.
  */
 export function earlyLateDayNote(rec) {
   const label = earlyLateKindLabel(rec?.early_late_kind);
   const hrs = Number(rec?.total_hours || 0).toFixed(2);
   if (rec?.early_late_graced) {
+    // 20261029_1: an early left after a basic-Late arrival is graced but Late.
     return rec.status === 'Present'
       ? { badge: `${label} · Graced`, text: `${label}: this month's one grace covers it, so the day is Present.` }
-      : { badge: `${label} · Graced · ${rec.status} by hours`, text: `${label}: this month's grace covers one of them, not both, so the day goes by hours worked (${hrs} h) and is ${rec.status}.` };
+      : { badge: `${label} · Graced · ${rec.status}`, text: `${label}: this month's one grace covers it, but the day also had a late arrival, so it is ${rec.status}.` };
+  }
+  if (rec?.early_late_kind === 'both') {
+    return { badge: `${label} · ${rec.status}`, text: `${label} on one day: the grace covers one or the other, never both, so the day is ${rec.status} and this month's grace is not used.` };
   }
   return { badge: label, text: `${label}: no grace (already used this month, or past the shift's limit), so the day goes by hours worked (${hrs} h) and is ${rec?.status}.` };
 }
@@ -347,29 +351,32 @@ export function earlyLateDayNote(rec) {
 export function earlyLateGraceNotice(tenant, monthRecords, isCurrentMonth) {
   const mins = tenant?.early_late_grace_minutes;
   if (!mins) return null;
+  // 20261029_1: early left has its own minutes (Raniwala 15: Office 19:00).
+  const outMins = tenant?.early_left_minutes ?? mins;
   const fmt = (ds) => new Date(ds + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
   const used = monthRecords.find((r) => r.early_late_graced);
   const counted = monthRecords.filter((r) => r.early_late_flag)
     .map((r) => `${fmt(r.date)} (${earlyLateKindLabel(r.early_late_kind)})`);
-  // 20261019_1: a finished day of this many hours is never Late.
+  // 20261019_1: a finished day of this many hours is never Late; after
+  // 20261029_1 only when they came in within the late-arrival minutes.
   const waive = tenant?.late_waived_after_hours
-    ? ` A day you work ${Number(tenant.late_waived_after_hours)} hours or more is never marked Late.`
+    ? ` A day you work ${Number(tenant.late_waived_after_hours)} hours or more is Present, unless you came in more than ${mins} min late: then it uses this month's grace, or is Late once the grace is used.`
     : '';
-  // 20261027_2: past the shift's limit, or late AND early on one day, uses
-  // no grace (hours decide), so a month can have marked days with the grace
-  // still free.
-  const pastLimit = ` The grace covers a late arrival or an early left, not both on one day, and not coming in after your shift's late limit or leaving before its early limit. Those days go by hours: Half Day if under 8 hours.`;
+  // 20261027_2: past the shift's limit uses no grace (hours decide); late AND
+  // early on one day is Half Day with no grace (20261028_6). So a month can
+  // have marked days with the grace still free.
+  const pastLimit = ` The grace covers a late arrival or an early left, not both: coming in late and leaving early on the same day is Half Day and does not use the grace. It also does not cover coming in after your shift's late limit or leaving before its early limit; those days go by hours: Half Day if under 8 hours.`;
   const marked = counted.length ? ` Marked so far: ${counted.join(', ')}.` : '';
   if (!used) {
     if (!isCurrentMonth && !counted.length) return null;
     return {
       used: false,
-      text: `Late arrival / early left grace available: once this month you can arrive more than ${mins} min after your shift starts, or leave more than ${mins} min before it ends, within your shift's limits, and still be marked Present.${pastLimit}${marked}${waive}`,
+      text: `Late arrival / early left grace available: once this month you can arrive more than ${mins} min after your shift starts, or leave more than ${outMins} min before it ends, within your shift's limits, and still be marked Present (Late if you also came in late that day).${pastLimit}${marked}${waive}`,
     };
   }
   return {
     used: true,
-    text: `Late arrival / early left grace used on ${fmt(used.date)} (${earlyLateKindLabel(used.early_late_kind)}). Any more late arrival or early left (more than ${mins} min) this month goes by hours: Half Day if under 8 hours, else Late for a late arrival.${pastLimit}${marked}${waive}`,
+    text: `Late arrival / early left grace used on ${fmt(used.date)} (${earlyLateKindLabel(used.early_late_kind)}). Any more late arrival (more than ${mins} min) or early left (more than ${outMins} min) this month goes by hours: Half Day if under 8 hours, else Late for a late arrival.${pastLimit}${marked}${waive}`,
   };
 }
 

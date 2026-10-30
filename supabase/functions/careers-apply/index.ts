@@ -65,6 +65,9 @@ serve(async (req) => {
     const { data: tenant } = await db.from("tenants").select("id, company_name")
       .eq("careers_slug", slug).eq("careers_enabled", true).maybeSingle();
     if (!tenant) return json({ error: "This careers page is not available." }, 404);
+    // Platform-level switch (superadmin Toggle Services → "Careers Page").
+    const { data: featureOn } = await db.rpc("ai_feature_enabled", { p_tenant: tenant.id, p_outlet: null, p_key: "careers_page" });
+    if (featureOn === false) return json({ error: "This careers page is not available." }, 404);
 
     const today = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
     const { data: posting } = await db.from("job_postings")

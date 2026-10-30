@@ -2,22 +2,26 @@ import React, { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import OutletSelect from '@/components/OutletSelect';
 import { showToast } from '@/components/Toast';
+import BulkApproveBar, { BulkHeadCell, BulkRowCell } from '@/components/BulkApproveBar';
+import { useBulkApproval } from '@/hooks/useBulkApproval';
 import { useAuth } from '@/context/AuthContext';
-import { useOutletView } from '@/context/OutletViewContext';
+import { useRequestOutletScope } from '@/context/OutletViewContext';
 import { listAllWfhRequests, approveWfhRequest, rejectWfhRequest } from '@/services/wfhService';
-import { fmt, getInitials, getAvatarColor, fullName, scopedToOutlet } from '@/lib/helpers';
+import { fmt, getInitials, getAvatarColor, fullName, scopedToOutlet, matchesSearch } from '@/lib/helpers';
+import { exportRequestSheet, fmtExportDateTime } from '@/lib/requestExport';
 
 export default function WFHRequestsPage() {
   const { profile, tenant } = useAuth();
-  const { outletProfileIds } = useOutletView();
+  const outletProfileIds = useRequestOutletScope();
 
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('Pending');
+  const [search, setSearch] = useState('');
   const [acting, setActing] = useState(null);
 
   const fetchRequests = useCallback(async () => {
-    if (!tenant) return;
+    if (!tenant || outletProfileIds === undefined) return;
     setLoading(true);
     try {
       const { data, error } = await listAllWfhRequests(tenant.id);
@@ -58,8 +62,19 @@ export default function WFHRequestsPage() {
     }
   };
 
-  const filtered = statusFilter === 'All' ? requests : requests.filter((r) => r.status === statusFilter);
+  const filtered = requests.filter((r) =>
+    (statusFilter === 'All' || r.status === statusFilter)
+    && matchesSearch(search, fullName(r.profile), r.profile?.employee_id, r.profile?.department, r.profile?.designation));
   const pendingCount = requests.filter((r) => r.status === 'Pending').length;
+
+  const bulk = useBulkApproval({
+    rows: filtered,
+    loading,
+    canAct: (req) => req.status === 'Pending',
+    noun: 'WFH request',
+    onDone: fetchRequests,
+    decide: (req, approve) => (approve ? approveWfhRequest : rejectWfhRequest)(req.id, profile.id),
+  });
 
   const fmtDateTime = (iso) => {
     if (!iso) return '—';
@@ -73,6 +88,29 @@ export default function WFHRequestsPage() {
     const name = fullName(reviewer);
     const role = reviewer.role === 'admin' ? 'Admin' : reviewer.role === 'manager' ? 'Manager' : reviewer.role;
     return { name, role };
+  };
+
+  const exportList = () => {
+    exportRequestSheet(filtered.map((req) => {
+      const rev = reviewerLabel(req.reviewer);
+      return {
+        'Emp Code': req.profile?.employee_id || '',
+        Employee: fullName(req.profile),
+        Department: req.profile?.department || '',
+        Designation: req.profile?.designation || '',
+        From: fmt.date(req.from_date),
+        To: fmt.date(req.to_date),
+        Reason: req.reason || '',
+        Status: req.status,
+        'Submitted On': fmtExportDateTime(req.created_at),
+        'Reviewed By': rev ? `${rev.name} (${rev.role})` : '',
+        'Reviewed On': fmtExportDateTime(req.reviewed_at),
+      };
+    }), {
+      sheet: `${statusFilter} WFH`,
+      file: `${statusFilter} wfh requests`,
+      widths: [10, 24, 18, 18, 13, 13, 40, 10, 22, 28, 22],
+    });
   };
 
   return (
@@ -101,13 +139,30 @@ export default function WFHRequestsPage() {
               )}
             </button>
           ))}
+          <input
+            className="form-input"
+            style={{ maxWidth: 220 }}
+            placeholder="Search employee, EMP code…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <button
+            className="btn btn-sm btn-outline"
+            style={{ marginLeft: 'auto' }}
+            onClick={exportList}
+            disabled={loading || filtered.length === 0}
+          >
+            <i className="fas fa-file-excel" style={{ marginRight: 6 }} />Export
+          </button>
         </div>
 
         <div className="card">
+          <BulkApproveBar bulk={bulk} />
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
+                  <BulkHeadCell bulk={bulk} />
                   <th>Employee</th>
                   <th>Submitted On</th>
                   <th>Date Range</th>
@@ -128,13 +183,14 @@ export default function WFHRequestsPage() {
                 ) : filtered.length === 0 ? (
                   <tr>
                     <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>
-                      No {statusFilter !== 'All' ? statusFilter.toLowerCase() : ''} requests found.
+                      No {statusFilter !== 'All' ? statusFilter.toLowerCase() : ''} requests found{search.trim() ? ` for "${search.trim()}"` : ''}.
                     </td>
                   </tr>
                 ) : filtered.map((req) => {
                   const rev = reviewerLabel(req.reviewer);
                   return (
                     <tr key={req.id}>
+                      <BulkRowCell bulk={bulk} row={req} />
                       <td>
                         <div className="emp-cell">
                           <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(req.profile_id)})` }}>
@@ -192,7 +248,7 @@ export default function WFHRequestsPage() {
                             <button
                               className="btn btn-sm btn-success"
                               title="Approve"
-                              disabled={acting === req.id}
+                              disabled={acting === req.id || bulk.busy}
                               onClick={() => handleApprove(req)}
                             >
                               {acting === req.id
@@ -202,7 +258,7 @@ export default function WFHRequestsPage() {
                             <button
                               className="btn btn-sm btn-danger"
                               title="Reject"
-                              disabled={acting === req.id}
+                              disabled={acting === req.id || bulk.busy}
                               onClick={() => handleReject(req)}
                             >
                               <i className="fas fa-times" />

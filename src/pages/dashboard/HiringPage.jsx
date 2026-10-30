@@ -5,6 +5,7 @@ import CareersSettingsCard from '@/components/CareersSettingsCard';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useFeatures } from '@/context/FeatureContext';
 import { JOB_TYPES, listJobPostings, createJobPosting, updateJobPosting, deleteJobPosting } from '@/services/hiringService';
 import { fmt, timeAgo } from '@/lib/helpers';
 
@@ -129,6 +130,7 @@ function PostingModal({ show, onClose, posting, onSaved }) {
 export default function HiringPage() {
   const { tenant, profile, refreshProfile } = useAuth();
   const canManage = profile?.role === 'admin';
+  const { isEnabled } = useFeatures();
 
   const [tab, setTab] = useState('open');
   const [postings, setPostings] = useState([]);
@@ -206,7 +208,7 @@ export default function HiringPage() {
       />
 
       <div className="page-content">
-        {canManage && <CareersSettingsCard tenant={tenant} onSaved={refreshProfile} />}
+        {canManage && isEnabled('careers_page') && <CareersSettingsCard tenant={tenant} onSaved={refreshProfile} />}
         {loading ? (
           <div style={{ padding: 48, textAlign: 'center', color: 'var(--text-muted)' }}>
             <div className="spinner" style={{ margin: '0 auto 16px' }} />Loading…

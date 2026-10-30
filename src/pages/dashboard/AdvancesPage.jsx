@@ -7,12 +7,17 @@ import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
 import { listAdvances, createAdvance, updateAdvance, deleteAdvance } from '@/services/advanceService';
 import { listActiveEmployees } from '@/services/employeeService';
-import { fmt, getInitials, getAvatarColor, fullName, scopedToOutlet } from '@/lib/helpers';
+import { fmt, getInitials, getAvatarColor, fullName, scopedToOutlet, isRaniwalaTenant, todayStr } from '@/lib/helpers';
+import { advanceEligibility, fmtYmd } from '@/lib/raniwalaPayroll';
 
 export default function AdvancesPage() {
   const { tenant, profile } = useAuth();
   const { outletProfileIds } = useOutletView();
   const isManager = profile?.role === 'manager';
+  // Raniwala: an advance needs one completed year, and HR sets the monthly
+  // deduction directly instead of a number of instalments (the DB enforces
+  // both — see 20261010_7_raniwala_payroll_structure.sql).
+  const raniwala = isRaniwalaTenant(tenant);
   const [advances, setAdvances]     = useState([]);
   const [employees, setEmployees]   = useState([]);
   const [filterStatus, setFilterStatus] = useState('');
@@ -59,6 +64,12 @@ export default function AdvancesPage() {
 
   const saveAdvance = async () => {
     if (!form.profile_id || !form.amount || !form.emi) return showToast('Fill required fields', 'error');
+    if (raniwala) {
+      if (!editAdv && !eligibility?.eligible) return showToast('This employee has not completed one year yet', 'error');
+      if (!(Number(form.emi) > 0) || Number(form.emi) > Number(form.amount)) {
+        return showToast('The monthly deduction must be between ₹1 and the advance amount', 'error');
+      }
+    }
 
     let result;
     if (editAdv) {
@@ -86,6 +97,8 @@ export default function AdvancesPage() {
   const totalOut    = activeAdv.reduce((s, a) => s + (a.balance || 0), 0);
   const totalEMI    = activeAdv.reduce((s, a) => s + (a.emi    || 0), 0);
   const getEmpName  = (pid) => { const e = employees.find((x) => x.id === pid); return e ? fullName(e) : '—'; };
+  const formEmp     = employees.find((x) => x.id === form.profile_id);
+  const eligibility = raniwala && formEmp ? advanceEligibility(formEmp.join_date, todayStr()) : null;
 
   return (
     <>
@@ -120,7 +133,7 @@ export default function AdvancesPage() {
               <div className="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Employee</th><th>Type</th><th>Amount</th><th>EMI</th><th>Paid</th><th>Balance</th><th>Status</th><th>Actions</th></tr>
+                    <tr><th>Employee</th><th>Type</th><th>Amount</th><th>{raniwala ? 'Monthly Deduction' : 'EMI'}</th><th>Paid</th><th>Balance</th><th>Status</th><th>Actions</th></tr>
                   </thead>
                   <tbody>
                     {filtered.length === 0 ? (
@@ -172,6 +185,15 @@ export default function AdvancesPage() {
             <option value="">Select Employee</option>
             {employees.map((e) => <option key={e.id} value={e.id}>{fullName(e)}</option>)}
           </select>
+          {eligibility && !editAdv && (
+            <div className="form-hint" style={{ color: eligibility.eligible ? 'var(--success)' : 'var(--danger)' }}>
+              {eligibility.eligible
+                ? `Completed one year on ${fmtYmd(eligibility.eligibleOn)} — eligible for an advance.`
+                : eligibility.eligibleOn
+                  ? `Not eligible yet — an advance needs one year of service, completed on ${fmtYmd(eligibility.eligibleOn)}.`
+                  : 'No date of joining on record, so one year of service cannot be checked.'}
+            </div>
+          )}
         </div>
         <div className="form-group">
           <label className="form-label">Type</label>
@@ -183,18 +205,34 @@ export default function AdvancesPage() {
           <div className="form-group">
             <label className="form-label">Amount (₹) *</label>
             <input className="form-input" type="number" value={form.amount}
-              onChange={(e) => { setForm({ ...form, amount: e.target.value }); calcEMI(e.target.value, form.installments); }} />
+              onChange={(e) => { setForm({ ...form, amount: e.target.value }); if (!raniwala) calcEMI(e.target.value, form.installments); }} />
           </div>
+          {raniwala ? (
+            <div className="form-group">
+              <label className="form-label">Deduct per month (₹) *</label>
+              <input className="form-input" type="number" min="1" value={form.emi}
+                onChange={(e) => setForm({ ...form, emi: e.target.value })} />
+            </div>
+          ) : (
+            <div className="form-group">
+              <label className="form-label">Installments *</label>
+              <input className="form-input" type="number" min="1" value={form.installments}
+                onChange={(e) => { setForm({ ...form, installments: e.target.value }); calcEMI(form.amount, e.target.value); }} />
+            </div>
+          )}
+        </div>
+        {raniwala ? (
+          Number(form.amount) > 0 && Number(form.emi) > 0 && (
+            <div className="form-hint" style={{ marginBottom: 12 }}>
+              Deducted from every salary automatically — recovered in {Math.ceil(Number(form.amount) / Number(form.emi))} month(s).
+            </div>
+          )
+        ) : (
           <div className="form-group">
-            <label className="form-label">Installments *</label>
-            <input className="form-input" type="number" min="1" value={form.installments}
-              onChange={(e) => { setForm({ ...form, installments: e.target.value }); calcEMI(form.amount, e.target.value); }} />
+            <label className="form-label">EMI Amount</label>
+            <input className="form-input" type="number" readOnly value={form.emi} />
           </div>
-        </div>
-        <div className="form-group">
-          <label className="form-label">EMI Amount</label>
-          <input className="form-input" type="number" readOnly value={form.emi} />
-        </div>
+        )}
         <div className="form-group">
           <label className="form-label">Remarks</label>
           <input className="form-input" value={form.remarks} onChange={(e) => setForm({ ...form, remarks: e.target.value })} />

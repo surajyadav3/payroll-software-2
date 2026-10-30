@@ -1,5 +1,5 @@
 import React from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import { useFeatures } from './context/FeatureContext';
 
@@ -44,11 +44,11 @@ import OutletsOverviewPage from './pages/dashboard/OutletsOverviewPage';
 import CombinedOutletDashboardPage from './pages/dashboard/CombinedOutletDashboardPage';
 import AnnouncementsPage from './pages/dashboard/AnnouncementsPage';
 import PoliciesPage from './pages/dashboard/PoliciesPage';
-import PerformancePage from './pages/dashboard/PerformancePage';
 import FeedbackPage from './pages/dashboard/FeedbackPage';
 import PIPPage from './pages/dashboard/PIPPage';
 import OneOnOnesPage from './pages/dashboard/OneOnOnesPage';
 import TaxSlabsPage from './pages/dashboard/TaxSlabsPage';
+import PfDifferencePage from './pages/dashboard/PfDifferencePage';
 import SalaryAdditionsPage from './pages/dashboard/SalaryAdditionsPage';
 import LeaveTypesPage from './pages/dashboard/LeaveTypesPage';
 import LeaveBalancesPage from './pages/dashboard/LeaveBalancesPage';
@@ -66,9 +66,7 @@ import OffboardingPage from './pages/dashboard/OffboardingPage';
 import MyOffboardingPage from './pages/employee/MyOffboardingPage';
 import AssetsPage from './pages/dashboard/AssetsPage';
 import MyAssetsPage from './pages/employee/MyAssetsPage';
-import ProjectsPage from './pages/dashboard/ProjectsPage';
-import MyProjectsPage from './pages/employee/MyProjectsPage';
-import TasksPage from './pages/dashboard/TasksPage';
+import { CrewShell, WorkPage, MyWorkPage, ProjectPage, ChatPage, MentionsPage, PerformancePage } from './crew/routes';
 import HelpPage from './pages/dashboard/HelpPage';
 import MeetingsPage from './pages/dashboard/MeetingsPage';
 import CareersPage from './pages/CareersPage';
@@ -80,7 +78,7 @@ import OrgHierarchyPage from './pages/dashboard/OrgHierarchyPage';
 
 import ManagerDashboardPage from './pages/dashboard/ManagerDashboardPage';
 import MyTeamPage from './pages/dashboard/MyTeamPage';
-import { isRaniwalaTenant } from './lib/helpers';
+import { isRaniwalaTenant, isHrSupport } from './lib/helpers';
 
 import EmployeeDashboard from './pages/employee/DashboardPage';
 import MyAttendancePage from './pages/employee/MyAttendancePage';
@@ -89,6 +87,7 @@ import MyPayslipsPage from './pages/employee/MyPayslipsPage';
 import TaxDeclarationPage from './pages/employee/TaxDeclarationPage';
 import MySpecialRequestsPage from './pages/employee/MySpecialRequestsPage';
 import MyRegularizeRequestsPage from './pages/employee/MyRegularizeRequestsPage';
+import L1EmployeesPage from './pages/employee/L1EmployeesPage';
 import MyWfhRequestsPage from './pages/employee/MyWfhRequestsPage';
 import MePage from './pages/employee/MePage';
 import HomePageTab from './pages/home/HomePage';
@@ -104,12 +103,22 @@ function ManagerTeamPage() {
   return isRaniwalaTenant(tenant) ? <MyTeamPage /> : <EmployeesPage />;
 }
 
+// Everyone with an employee record uses Work, Messages and Performance (the platform console
+// account — superadmin — has no company, so it has none of them).
+const WORK_ROLES = ['employee', 'admin', 'manager', 'hod', 'management'];
+
+// Old links such as /tasks?task=<id> keep working: same query, new address.
+function RedirectKeepingQuery({ to }) {
+  const { search } = useLocation();
+  return <Navigate to={`${to}${search}`} replace />;
+}
+
 function homeFor(role) {
   if (role === 'superadmin') return '/master-dashboard';
   return '/home';
 }
 
-function PrivateRoute({ children, allowedRoles, featureKey, notForRaniwala }) {
+function PrivateRoute({ children, allowedRoles, featureKey, notForRaniwala, payroll, settings }) {
   const { user, profile, tenant, loading } = useAuth();
   const { isEnabled, loading: featuresLoading } = useFeatures();
 
@@ -131,13 +140,20 @@ function PrivateRoute({ children, allowedRoles, featureKey, notForRaniwala }) {
     return <Navigate to={notForRaniwala === true ? homeFor(profile.role) : notForRaniwala} replace />;
   }
 
+  // HR Support is HR without payroll (RLS hides those tables from it too)
+  // and without the Settings / HR Settings pages.
+  if ((payroll || settings) && isHrSupport(profile)) {
+    return <Navigate to={homeFor(profile.role)} replace />;
+  }
+
   if (featureKey) {
     // Wait for the toggle state to load before deciding — otherwise a page
     // whose feature IS enabled would flash-redirect on every load.
     if (featuresLoading) {
       return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div className="spinner"></div></div>;
     }
-    if (!isEnabled(featureKey)) {
+    // A list means "any of these" (one screen shared by several services).
+    if (![].concat(featureKey).some((key) => isEnabled(key))) {
       return <Navigate to={homeFor(profile.role)} replace />;
     }
   }
@@ -161,32 +177,33 @@ export default function App() {
 
       <Route element={<DashboardLayout />}>
         {/* Admin Routes */}
-        <Route path="/dashboard" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><DashboardPage /></PrivateRoute>} />
+        <Route path="/dashboard" element={<PrivateRoute payroll allowedRoles={['admin', 'superadmin']}><DashboardPage /></PrivateRoute>} />
         <Route path="/employees" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="employees"><EmployeesPage /></PrivateRoute>} />
         <Route path="/attendance" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="attendance"><AttendancePage /></PrivateRoute>} />
         <Route path="/essl-records" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="attendance"><EsslRecordsPage /></PrivateRoute>} />
         <Route path="/shift-roster" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="shift_roster"><ShiftAssignmentsPage /></PrivateRoute>} />
-        <Route path="/salary" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="salary_structure"><SalaryPage /></PrivateRoute>} />
-        <Route path="/payroll" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="run_payroll"><PayrollPage /></PrivateRoute>} />
-        <Route path="/payslips" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="payslips"><PayslipsPage /></PrivateRoute>} />
-        <Route path="/tax-slabs" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="tax_slabs"><TaxSlabsPage /></PrivateRoute>} />
-        <Route path="/salary-additions" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="salary_additions"><SalaryAdditionsPage /></PrivateRoute>} />
+        <Route path="/salary" element={<PrivateRoute payroll allowedRoles={['admin', 'superadmin']} featureKey="salary_structure"><SalaryPage /></PrivateRoute>} />
+        <Route path="/payroll" element={<PrivateRoute payroll allowedRoles={['admin', 'superadmin']} featureKey="run_payroll"><PayrollPage /></PrivateRoute>} />
+        <Route path="/payslips" element={<PrivateRoute payroll allowedRoles={['admin', 'superadmin']} featureKey="payslips"><PayslipsPage /></PrivateRoute>} />
+        <Route path="/tax-slabs" element={<PrivateRoute payroll allowedRoles={['admin', 'superadmin']} featureKey="tax_slabs"><TaxSlabsPage /></PrivateRoute>} />
+        <Route path="/pf-difference" element={<PrivateRoute payroll allowedRoles={['admin', 'superadmin']} featureKey="run_payroll"><PfDifferencePage /></PrivateRoute>} />
+        <Route path="/salary-additions" element={<PrivateRoute payroll allowedRoles={['admin', 'superadmin']} featureKey="salary_additions"><SalaryAdditionsPage /></PrivateRoute>} />
         <Route path="/leaves" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="leave_requests"><LeavesPage /></PrivateRoute>} />
-        <Route path="/leave-types" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="leave_setup"><LeaveTypesPage /></PrivateRoute>} />
+        <Route path="/leave-types" element={<PrivateRoute settings allowedRoles={['admin', 'superadmin']} featureKey="leave_setup"><LeaveTypesPage /></PrivateRoute>} />
         <Route path="/leave-balances" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="leave_setup"><LeaveBalancesPage /></PrivateRoute>} />
-        <Route path="/advances" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="advances_loans"><AdvancesPage /></PrivateRoute>} />
+        <Route path="/advances" element={<PrivateRoute payroll allowedRoles={['admin', 'superadmin']} featureKey="advances_loans"><AdvancesPage /></PrivateRoute>} />
         <Route path="/special-requests" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="special_requests"><SpecialRequestsPage /></PrivateRoute>} />
         <Route path="/employee-calendar" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="employee_calendar"><EmployeeCalendarPage /></PrivateRoute>} />
         <Route path="/live-tracking" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="live_tracking"><LiveTrackingPage /></PrivateRoute>} />
         <Route path="/master-report" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="master_report"><MasterReportPage /></PrivateRoute>} />
-        <Route path="/settings" element={<PrivateRoute allowedRoles={['admin', 'superadmin']}><SettingsPage /></PrivateRoute>} />
-        <Route path="/approval-chains" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="approval_chains"><ApprovalChainsPage /></PrivateRoute>} />
+        <Route path="/settings" element={<PrivateRoute settings allowedRoles={['admin', 'superadmin']}><SettingsPage /></PrivateRoute>} />
+        <Route path="/approval-chains" element={<PrivateRoute settings allowedRoles={['admin', 'superadmin']} featureKey="approval_chains"><ApprovalChainsPage /></PrivateRoute>} />
         <Route path="/org-structure" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="org_hierarchy"><OrgHierarchyPage /></PrivateRoute>} />
         <Route path="/punch-approvals" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="attendance"><PunchApprovalsPage /></PrivateRoute>} />
         <Route path="/regularize" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="regularize_attendance"><RegularizeAttendancePage /></PrivateRoute>} />
         <Route path="/wfh-requests" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="wfh_requests"><WFHRequestsPage /></PrivateRoute>} />
         <Route path="/verification-requests" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="profile_verification"><VerificationRequestsPage /></PrivateRoute>} />
-        <Route path="/group-dashboard" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="outlets_multi_branch"><GroupDashboardPage /></PrivateRoute>} />
+        <Route path="/group-dashboard" element={<PrivateRoute payroll allowedRoles={['admin', 'superadmin']} featureKey="outlets_multi_branch"><GroupDashboardPage /></PrivateRoute>} />
         <Route path="/outlets" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="outlets_multi_branch"><OutletsOverviewPage /></PrivateRoute>} />
         <Route path="/outlets/combined" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="outlets_multi_branch"><CombinedOutletDashboardPage /></PrivateRoute>} />
         <Route path="/helpdesk" element={<PrivateRoute allowedRoles={['admin']} featureKey="helpdesk"><HelpdeskPage /></PrivateRoute>} />
@@ -207,7 +224,7 @@ export default function App() {
         <Route path="/manager-advances" element={<PrivateRoute allowedRoles={['manager']} notForRaniwala featureKey="advances_loans"><AdvancesPage /></PrivateRoute>} />
         <Route path="/manager-salary-additions" element={<PrivateRoute allowedRoles={['manager']} notForRaniwala featureKey="salary_additions"><SalaryAdditionsPage /></PrivateRoute>} />
         <Route path="/hr-settings" element={<PrivateRoute allowedRoles={['manager']} notForRaniwala><HrFeatureSettingsPage /></PrivateRoute>} />
-        <Route path="/feature-settings" element={<PrivateRoute allowedRoles={['admin']}><HrFeatureSettingsPage /></PrivateRoute>} />
+        <Route path="/feature-settings" element={<PrivateRoute settings allowedRoles={['admin']}><HrFeatureSettingsPage /></PrivateRoute>} />
 
         {/* Superadmin specific */}
         <Route path="/master-dashboard" element={<PrivateRoute allowedRoles={['superadmin']}><MasterDashboardPage /></PrivateRoute>} />
@@ -224,9 +241,11 @@ export default function App() {
         <Route path="/my-leaves" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="leave_requests"><MyLeavesPage /></PrivateRoute>} />
         <Route path="/my-special-requests" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="special_requests"><MySpecialRequestsPage /></PrivateRoute>} />
         <Route path="/my-regularize" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="regularize_attendance"><MyRegularizeRequestsPage /></PrivateRoute>} />
+        {/* L1 SPOC: the people HR put in this user's care (empty list for everyone else). */}
+        <Route path="/l1-employees" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']}><L1EmployeesPage /></PrivateRoute>} />
         <Route path="/my-wfh" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="wfh_requests"><MyWfhRequestsPage /></PrivateRoute>} />
-        <Route path="/my-payslips" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="payslips"><MyPayslipsPage /></PrivateRoute>} />
-        <Route path="/my-tax-declaration" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="tax_declaration"><TaxDeclarationPage /></PrivateRoute>} />
+        <Route path="/my-payslips" element={<PrivateRoute payroll allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="payslips"><MyPayslipsPage /></PrivateRoute>} />
+        <Route path="/my-tax-declaration" element={<PrivateRoute payroll allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="tax_declaration"><TaxDeclarationPage /></PrivateRoute>} />
 
         {/* Notifications: core, available to every role, never feature-gated */}
         <Route path="/notifications" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']}><NotificationsPage /></PrivateRoute>} />
@@ -257,25 +276,43 @@ export default function App() {
         {/* Assets: admin manages inventory + assignments; employees see what's currently/previously assigned to them */}
         <Route path="/assets" element={<PrivateRoute allowedRoles={['admin', 'superadmin']} featureKey="assets"><AssetsPage /></PrivateRoute>} />
         <Route path="/my-assets" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="assets"><MyAssetsPage /></PrivateRoute>} />
-        {/* Projects: admin/manager manage projects, members, and tasks; employees see tasks assigned to them across projects */}
-        <Route path="/projects" element={<PrivateRoute allowedRoles={['admin', 'manager', 'superadmin']} featureKey="projects"><ProjectsPage /></PrivateRoute>} />
-        {/* Tasks: everyone; who sees/assigns/edits what is enforced in the DB (migration 20261003_1) */}
         <Route path="/help" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']}><HelpPage /></PrivateRoute>} />
         <Route path="/meetings" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="ai_meetings"><MeetingsPage /></PrivateRoute>} />
-        <Route path="/tasks" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management']} featureKey="tasks"><TasksPage /></PrivateRoute>} />
-        <Route path="/my-projects" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="projects"><MyProjectsPage /></PrivateRoute>} />
+        {/* Old addresses of the task, project and performance screens (bookmarks, earlier notifications) */}
+        <Route path="/tasks" element={<RedirectKeepingQuery to="/work/me" />} />
+        <Route path="/projects" element={<Navigate to="/work" replace />} />
+        <Route path="/my-projects" element={<Navigate to="/work" replace />} />
+        <Route path="/performance/kras" element={<Navigate to="/performance" replace />} />
+        <Route path="/performance/reviews" element={<Navigate to="/performance" replace />} />
         <Route path="/expense-claims" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="expense_claims"><ExpenseClaimsPage /></PrivateRoute>} />
         <Route path="/travel-requests" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="travel_requests"><TravelRequestsPage /></PrivateRoute>} />
 
-        {/* Shared: Performance Management (KRAs, Feedback, PIP, Reviews) — visible to everyone, role logic inside each page */}
-        <Route path="/performance" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']}><PerformancePage /></PrivateRoute>} />
-        <Route path="/performance/kras" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="performance_kras"><PerformancePage defaultSection="Scorecards" /></PrivateRoute>} />
+        {/* Performance add-ons with their own pages (the goals, KPIs and reviews screen is under "Work, Messages, Performance" below) */}
         <Route path="/performance/feedback" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="performance_feedback"><FeedbackPage /></PrivateRoute>} />
         <Route path="/performance/pip" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="performance_pip"><PIPPage /></PrivateRoute>} />
-        <Route path="/performance/reviews" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="performance_reviews"><PerformancePage defaultSection="Reviews" /></PrivateRoute>} />
         <Route path="/performance/one-on-ones" element={<PrivateRoute allowedRoles={['employee', 'admin', 'manager', 'hod', 'management', 'superadmin']} featureKey="performance_one_on_ones"><OneOnOnesPage /></PrivateRoute>} />
       </Route>
-      
+
+      {/* Work, Messages, Performance — the screens of the new CrewCore platform (src/crew). They sit in the
+          same layout; CrewShell adds the header and the frame they need. Who sees and may do what is
+          decided by the server (work_api / perf_api). */}
+      <Route element={<DashboardLayout />}>
+        <Route element={<PrivateRoute allowedRoles={WORK_ROLES} featureKey="tasks"><CrewShell title="Work" breadcrumb="Tasks, projects and the conversations around them" /></PrivateRoute>}>
+          <Route path="/work" element={<WorkPage />} />
+          <Route path="/work/me" element={<MyWorkPage />} />
+          <Route path="/work/projects/:id" element={<ProjectPage />} />
+        </Route>
+        <Route element={<PrivateRoute allowedRoles={WORK_ROLES} featureKey="team_chat"><CrewShell title="Messages" breadcrumb="Channels, project chat and direct messages" fullBleed /></PrivateRoute>}>
+          <Route path="/work/chat" element={<ChatPage />} />
+        </Route>
+        <Route element={<PrivateRoute allowedRoles={WORK_ROLES} featureKey="team_chat"><CrewShell title="Messages" breadcrumb="Where you were mentioned" /></PrivateRoute>}>
+          <Route path="/work/mentions" element={<MentionsPage />} />
+        </Route>
+        <Route element={<PrivateRoute allowedRoles={WORK_ROLES} featureKey={['performance_kras', 'performance_reviews']}><CrewShell title="Performance" breadcrumb="Goals, KPIs, reviews and results" /></PrivateRoute>}>
+          <Route path="/performance" element={<PerformancePage />} />
+        </Route>
+      </Route>
+
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

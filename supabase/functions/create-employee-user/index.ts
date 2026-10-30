@@ -53,7 +53,7 @@ serve(async (req) => {
     // a client-supplied tenantId is never trusted on its own.
     const { data: callerProfile, error: callerProfileErr } = await adminClient
       .from("profiles")
-      .select("role, tenant_id")
+      .select("role, tenant_id, hr_support")
       .eq("id", caller.id)
       .single();
 
@@ -84,6 +84,14 @@ serve(async (req) => {
     const requestedRole: string = profileData.role || "employee";
     if (!ASSIGNABLE_ROLES[callerProfile.role]?.includes(requestedRole)) {
       return json({ error: `Not authorized to assign the role "${requestedRole}".` }, 403);
+    }
+
+    // HR Support (HR without payroll, 20261012_1) adds employees with their
+    // full details, salary included (20261021_8), but can't mint a full HR
+    // login — the service role here would otherwise skip the DB guard.
+    const hrSupport = callerProfile.role === "admin" && callerProfile.hr_support === true;
+    if (hrSupport && requestedRole === "admin") {
+      return json({ error: "The HR Support login can't create an HR (admin) account." }, 403);
     }
 
     const tempPassword = "Pay@" + Math.random().toString(36).slice(2, 8).toUpperCase();

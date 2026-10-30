@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import { STAFF_ROLES } from '@/lib/helpers';
+import { STAFF_ROLES, todayStr } from '@/lib/helpers';
 import { notifyProfiles } from './notificationService';
 
 // ── Checklist library ───────────────────────────────────────────────────────
@@ -40,12 +40,26 @@ export async function fetchMyProcess(profileId) {
   return { data: data || null, error };
 }
 
+/**
+ * Where an offboarding stands against its exit date (the employee's last
+ * day): days left while In Progress, 0 on the last day. The DB sets the
+ * status itself (trigger + daily job, migration 20261024_4): In Progress
+ * until the exit date, Completed — and the employee Inactive — the day after.
+ */
+export function exitCountdown(process) {
+  if (process.status !== 'In Progress' || !process.exit_date) return null;
+  const days = Math.round((new Date(process.exit_date) - new Date(todayStr())) / 86400000);
+  if (days <= 0) return 'Last day today';
+  return days === 1 ? '1 day left' : `${days} days left`;
+}
+
 /** Starts a new offboarding process for an exiting employee, copying the current checklist library into editable tasks. */
 export async function startProcess(tenantId, profileId, payload, createdBy) {
   const { data: process, error } = await supabase.from('offboarding_processes').insert([{
     tenant_id: tenantId, profile_id: profileId, reason: payload.reason || '',
-    exit_date: payload.exit_date || new Date().toISOString().slice(0, 10),
-    last_working_day: payload.last_working_day || null, notes: payload.notes || '', created_by: createdBy,
+    applied_on: payload.applied_on || todayStr(),
+    exit_date: payload.exit_date || todayStr(),
+    notes: payload.notes || '', created_by: createdBy,
   }]).select('id').single();
   if (error) return { error };
 
@@ -75,13 +89,15 @@ export async function updateProcess(id, payload) {
     ? (await supabase.from('offboarding_processes').select('tenant_id, profile_id').eq('id', id).single()).data
     : null;
 
-  const { error } = await supabase.from('offboarding_processes').update(payload).eq('id', id);
+  // The DB may settle on a different status than asked (it follows the exit date).
+  const { data, error } = await supabase.from('offboarding_processes').update(payload).eq('id', id).select('status').single();
+  const status = data?.status || payload.status;
 
   if (!error && req?.tenant_id && req?.profile_id) {
     await notifyProfiles(req.tenant_id, [req.profile_id], {
-      type: `offboarding_${payload.status.toLowerCase().replace(/\s+/g, '_')}`,
-      title: `Offboarding ${payload.status}`,
-      body: `Your offboarding status was updated to ${payload.status}.`,
+      type: `offboarding_${status.toLowerCase().replace(/\s+/g, '_')}`,
+      title: `Offboarding ${status}`,
+      body: `Your offboarding status was updated to ${status}.`,
       linkKey: 'my-offboarding',
       relatedId: id,
     });

@@ -92,3 +92,32 @@ export async function fetchCompOffAdjustments(profileId) {
     .limit(100);
   return { data: data || [], error };
 }
+
+/**
+ * Comp off an employee earned from attendance, newest first — each day the DB
+ * credited (attendance.comp_off_credit): a weekly off / holiday worked
+ * (comp_off_granted) or time past the shift on a normal day.
+ */
+export async function fetchCompOffEarned(profileId) {
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('id, date, status, total_hours, comp_off_credit, comp_off_granted')
+    .eq('profile_id', profileId)
+    .gt('comp_off_credit', 0)
+    .order('date', { ascending: false })
+    .limit(100);
+  return { data: data || [], error };
+}
+
+/** Approved Comp Off leave (spends the balance), newest first. */
+export async function fetchCompOffUsed(profileId) {
+  const { data, error } = await supabase
+    .from('leave_requests')
+    .select('id, start_date, end_date, reason, updated_at')
+    .eq('profile_id', profileId)
+    .eq('leave_type', 'Comp Off')
+    .eq('status', 'Approved')
+    .order('start_date', { ascending: false })
+    .limit(100);
+  return { data: data || [], error };
+}

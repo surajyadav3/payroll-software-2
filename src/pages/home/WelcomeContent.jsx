@@ -2,6 +2,8 @@ import React, { useEffect, useState, useCallback } from 'react';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
+import { useFeatures } from '@/context/FeatureContext';
+import VerifiedDetailsCard from './VerifiedDetailsCard';
 import {
   getMyProfileDetails, upsertProfileDetails, getProfileName, EMPTY_PROFILE_DETAILS,
 } from '@/services/profileDetailsService';
@@ -53,6 +55,10 @@ function completionPercent(d) {
   const total = scalarFields.length + 3;
   return Math.round(((filled + listBonus) / total) * 100);
 }
+
+// DOB already on the HR record (profiles.date_of_birth — e.g. Raniwala's
+// imported DOBs) fills in until the employee sets their own.
+const withHrDob = (d, profile) => (d.date_of_birth || !profile?.date_of_birth ? d : { ...d, date_of_birth: profile.date_of_birth });
 
 function formatAddress(addr) {
   if (!addr) return '';
@@ -116,6 +122,7 @@ function ListSummary({ items, render, emptyText }) {
 
 export default function WelcomeContent() {
   const { profile, tenant } = useAuth();
+  const { isEnabled } = useFeatures();
   const [details, setDetails] = useState(EMPTY_PROFILE_DETAILS);
   const [managerName, setManagerName] = useState('');
   const [loading, setLoading] = useState(true);
@@ -128,7 +135,7 @@ export default function WelcomeContent() {
     setLoading(true);
     const { data, error } = await getMyProfileDetails(profile.id);
     if (error) showToast('Failed to load profile: ' + error.message, 'error');
-    setDetails(data || EMPTY_PROFILE_DETAILS);
+    setDetails(withHrDob(data || EMPTY_PROFILE_DETAILS, profile));
     setLoading(false);
   }, [profile]);
 
@@ -151,7 +158,7 @@ export default function WelcomeContent() {
     try {
       const { data, error } = await upsertProfileDetails(tenant.id, profile.id, patch);
       if (error) return showToast('Failed: ' + error.message, 'error');
-      setDetails(data);
+      setDetails(withHrDob(data, profile));
       showToast('Saved', 'success');
       setModal(null);
     } finally {
@@ -212,6 +219,8 @@ export default function WelcomeContent() {
           })()}
           <DetailRow label="Reporting Manager" value={managerName} />
         </div>
+
+        {isEnabled('profile_verification') && <VerifiedDetailsCard />}
 
         {/* Introduce yourself */}
         <div className="card" style={{ marginTop: 16, padding: 20 }}>

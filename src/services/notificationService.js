@@ -1,22 +1,33 @@
 import { supabase } from '@/lib/supabase';
 import { fullName } from '@/lib/helpers';
 
+// Birthday / work-anniversary notifications are a same-day visual: show them
+// only on their own day (IST). The DB also deletes them after midnight
+// (purge_past_celebrations); this keeps the bell right in between.
+const istDayStartIso = () => {
+  const ist = new Date(Date.now() + 330 * 60000);
+  ist.setUTCHours(0, 0, 0, 0);
+  return new Date(ist.getTime() - 330 * 60000).toISOString();
+};
+const hidePastCelebrations = (q) =>
+  q.or(`created_at.gte.${istDayStartIso()},and(type.not.ilike.birthday*,type.not.ilike.*anniversar*)`);
+
 /** Latest notifications for one user, newest first. */
 export async function listMyNotifications(profileId, limit = 50) {
-  const { data, error } = await supabase
+  const { data, error } = await hidePastCelebrations(supabase
     .from('app_notifications')
     .select('*')
-    .eq('profile_id', profileId)
+    .eq('profile_id', profileId))
     .order('created_at', { ascending: false })
     .limit(limit);
   return { data: data || [], error };
 }
 
 export async function countUnread(profileId) {
-  const { count, error } = await supabase
+  const { count, error } = await hidePastCelebrations(supabase
     .from('app_notifications')
     .select('id', { count: 'exact', head: true })
-    .eq('profile_id', profileId)
+    .eq('profile_id', profileId))
     .eq('is_read', false);
   return { count: count || 0, error };
 }

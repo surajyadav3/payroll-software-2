@@ -10,11 +10,12 @@ import { useOutletView } from '@/context/OutletViewContext';
 import {
   fetchTeamAttendance, fetchAllTenantAttendance, fetchAttendanceRangeWithPunches, saveManualAttendance, fetchAttendanceAuditLog,
 } from '@/services/attendanceService';
-import { listActiveEmployees } from '@/services/employeeService';
+import { listActiveEmployees, listLeaversSince } from '@/services/employeeService';
+import { fetchHolidaysInRange } from '@/services/holidayService';
 import {
   todayStr, dateStr, fmtTime12, fmtDuration, getInitials, getAvatarColor, fullName, scopedToOutlet, isTenantWeeklyOff,
-  isShortDay, MONTHLY_LATE_HIGHLIGHT_LIMIT, isRaniwalaTenant, toTitleCase, isFullPaidDayStatus,
-  earlyLateKindLabel,
+  holidayForEmployee, isBeforeJoining, isShortDay, MONTHLY_LATE_HIGHLIGHT_LIMIT, isRaniwalaTenant, toTitleCase, isFullPaidDayStatus,
+  comparePunches, fmtPunchTime12, earlyLateKindLabel,
 } from '@/lib/helpers';
 
 // The day's earliest punch counts as Clock In — used only by the Late
@@ -22,7 +23,7 @@ import {
 function getFirstIn(punches) {
   return (punches || [])
     .slice()
-    .sort((a, b) => a.punch_time.localeCompare(b.punch_time))[0]?.punch_time || null;
+    .sort(comparePunches)[0]?.punch_time || null;
 }
 
 // Map pin linking to where an app/web punch was made (same Google Maps link
@@ -79,6 +80,8 @@ export default function AttendancePage() {
   const [teamDept, setTeamDept] = useState('');
   const [teamDivision, setTeamDivision] = useState('');
   const [teamData, setTeamData] = useState([]);
+  // Staff who left in teamDate's month (Inactive now): shown in their own table.
+  const [leaverData, setLeaverData] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [divisions, setDivisions] = useState([]);
   const [managerById, setManagerById] = useState({});
@@ -265,8 +268,15 @@ export default function AttendancePage() {
 
   const fetchTeamData = useCallback(async () => {
     if (!tenant) return;
-    const { employees: allEmps, records: attRecords } = await fetchTeamAttendance(tenant.id, teamDate);
+    const [y, m] = teamDate.split('-').map(Number);
+    const monthEnd = dateStr(new Date(y, m, 0));
+    const [{ employees: allEmps, records: attRecords }, leaversRes, holidaysRes] = await Promise.all([
+      fetchTeamAttendance(tenant.id, teamDate),
+      listLeaversSince(tenant.id, `${teamDate.slice(0, 7)}-01`),
+      fetchHolidaysInRange(tenant.id, teamDate, teamDate),
+    ]);
     const emps = scopedToOutlet(allEmps, outletProfileIds, 'id');
+    let leavers = scopedToOutlet(leaversRes.data.filter((e) => e.exit_date <= monthEnd), outletProfileIds, 'id');
     setEmployees(emps);
     // Outlet -> Division -> Department cascade: divisions are scoped to the
     // currently-selected outlet, and departments further narrow to whichever
@@ -290,11 +300,13 @@ export default function AttendancePage() {
     let filtered = emps;
     if (teamDept) filtered = filtered.filter((e) => e.department === teamDept);
     if (teamDivision) filtered = filtered.filter((e) => e.division === teamDivision);
+    if (teamDept) leavers = leavers.filter((e) => e.department === teamDept);
+    if (teamDivision) leavers = leavers.filter((e) => e.division === teamDivision);
 
     const records = {};
     attRecords.forEach((r) => { records[r.profile_id] = r; });
 
-    const rows = filtered.map((emp) => {
+    const rows = [...filtered, ...leavers].map((emp) => {
       const rec = records[emp.id];
       let clockInT = '—', clockOutT = '—', hours = '—', rawHours = null, status = 'Absent', badgeCls = 'badge-danger';
       let extraPunches = false, punchTimes = [], clockInSource = null, clockOutSource = null;
@@ -304,7 +316,7 @@ export default function AttendancePage() {
       // fall through to the Absent/Weekend default below.
       if (rec) {
         if (rec.punches?.length) {
-          const sorted = [...rec.punches].sort((a, b) => a.punch_time.localeCompare(b.punch_time));
+          const sorted = [...rec.punches].sort(comparePunches);
           // Clock In = the day's first punch, Clock Out = its last punch, of
           // EITHER type — matches the fixed first-punch/last-punch rule
           // (see trg_recompute_attendance_from_punches): a device
@@ -315,13 +327,13 @@ export default function AttendancePage() {
           clockInT = fmtTime12(sorted[0].punch_time);
           clockInSource = sorted[0].source;
           if (sorted.length > 1) {
-            clockOutT = fmtTime12(sorted[sorted.length - 1].punch_time);
+            clockOutT = fmtPunchTime12(sorted[sorted.length - 1]);
             clockOutSource = sorted[sorted.length - 1].source;
           }
           // More than one in + one out — flag it so HR can glance at the
           // raw punch list rather than silently trust whichever ended up last.
           extraPunches = sorted.length > 2;
-          punchTimes = sorted.map((p) => `${fmtTime12(p.punch_time)} (${p.punch_type})`);
+          punchTimes = sorted.map((p) => `${fmtPunchTime12(p)} (${p.punch_type})`);
         }
         rawHours = rec.total_hours || null;
         hours = rec.total_hours ? fmtDuration(rec.total_hours) : '—';
@@ -330,21 +342,33 @@ export default function AttendancePage() {
         else if (status === 'Half Day' || status === 'Pending Approval') badgeCls = 'badge-warning';
         else if (status === 'Mispunch') badgeCls = 'badge-danger';
         else if (status === 'Leave' || status === 'Comp Off') badgeCls = 'badge-purple';
+      } else if (isBeforeJoining(emp, teamDate)) {
+        // Not joined yet: the calendar starts on the joining date.
+        status = 'Not Joined'; badgeCls = 'badge-secondary';
       } else {
         const d = new Date(teamDate);
-        if (isTenantWeeklyOff(d, tenant, outletById[emp.outlet_id])) { status = 'Weekend'; badgeCls = 'badge-info'; }
+        // A holiday of the employee's own outlet (or a company-wide one, unless
+        // the outlet has holidays off) is not an absence.
+        const holiday = holidayForEmployee(holidaysRes.data, teamDate, emp, outletById[emp.outlet_id]);
+        if (holiday) { status = 'Holiday'; badgeCls = 'badge-info'; }
+        else if (isTenantWeeklyOff(d, tenant, outletById[emp.outlet_id], emp)) { status = 'Weekend'; badgeCls = 'badge-info'; }
       }
       // Where the app/web clock-in and the latest clock-out were made (device
       // punches carry no location). Only the day's first clock-in and last
       // clock-out are stored, on the attendance row itself.
       const inLoc = rec?.punch_in_lat != null && rec?.punch_in_lng != null ? { lat: rec.punch_in_lat, lng: rec.punch_in_lng } : null;
       const outLoc = rec?.punch_out_lat != null && rec?.punch_out_lng != null ? { lat: rec.punch_out_lat, lng: rec.punch_out_lng } : null;
+      const offDay = isTenantWeeklyOff(new Date(teamDate), tenant, outletById[emp.outlet_id], emp);
       // Shift picked from the day's first punch, for companies on that rule.
       const dayShift = rec?.day_shift ? `${fmtTime12(rec.day_shift.start_time)} – ${fmtTime12(rec.day_shift.end_time)}` : null;
-      return { ...emp, clockInT, clockOutT, hours, rawHours, status, badgeCls, extraPunches, punchTimes, clockInSource, clockOutSource, inLoc, outLoc, outOfGeofence: rec?.out_of_geofence || false, compOffCredit: Number(rec?.comp_off_credit) || 0, dayShift, dayShiftName: rec?.day_shift?.name || '', elGraced: !!rec?.early_late_graced, elKind: rec?.early_late_kind || null };
+      return { ...emp, offDay, clockInT, clockOutT, hours, rawHours, status, badgeCls, extraPunches, punchTimes, clockInSource, clockOutSource, inLoc, outLoc, outOfGeofence: rec?.out_of_geofence || false, compOffCredit: Number(rec?.comp_off_credit) || 0, dayShift, dayShiftName: rec?.day_shift?.name || '', elGraced: !!rec?.early_late_graced, elKind: rec?.early_late_kind || null };
     });
 
-    setTeamData(rows);
+    setTeamData(rows.filter((r) => !r.inactive));
+    // After their last day a leaver is no longer due at work: "Left", not Absent.
+    setLeaverData(rows.filter((r) => r.inactive).map((r) => (teamDate > r.exit_date && (r.status === 'Absent' || r.status === 'Weekend' || r.status === 'Holiday')
+      ? { ...r, status: 'Left', badgeCls: 'badge-secondary' }
+      : r)));
   }, [tenant, teamDate, teamDept, teamDivision, outletProfileIds, outlets]);
 
   useEffect(() => { if (tab === 'team') fetchTeamData(); }, [tab, fetchTeamData]);
@@ -420,6 +444,22 @@ export default function AttendancePage() {
     Object.values(monthlyStatsByProfile).forEach((s) => { total += s.total; days += s.days; });
     return days > 0 ? total / days : 0;
   }, [monthlyStatsByProfile]);
+
+  // Each leaver's days in teamDate's month, up to their last day — Present
+  // and other full paid days count 1, Half Day 0.5.
+  const leaverMonthDays = useMemo(() => {
+    const exitById = Object.fromEntries(leaverData.map((r) => [r.id, r.exit_date]));
+    const out = {};
+    monthlyAtt.forEach((a) => {
+      const exit = exitById[a.profile_id];
+      if (!exit || a.date > exit) return;
+      const s = (out[a.profile_id] ||= { present: 0, absent: 0 });
+      if (isFullPaidDayStatus(a.status)) s.present += 1;
+      else if (a.status === 'Half Day') s.present += 0.5;
+      else if (a.status === 'Absent') s.absent += 1;
+    });
+    return out;
+  }, [leaverData, monthlyAtt]);
 
   const monthLabelForTeamDate = new Date(teamDate).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
 
@@ -590,7 +630,7 @@ export default function AttendancePage() {
                       const avgHoursThisMonth = monthStat ? monthStat.total / monthStat.days : 0;
                       const lateThisMonth = monthlyLateCountByProfile[r.id] || 0;
                       const isRepeatLate = lateThisMonth > MONTHLY_LATE_HIGHLIGHT_LIMIT;
-                      const isShort = isShortDay(r.rawHours);
+                      const isShort = !r.offDay && isShortDay(r.rawHours);
                       return (
                       <tr key={r.id} style={isRepeatLate ? { background: 'var(--danger-light, #fee2e2)' } : undefined}>
                         <td>
@@ -625,7 +665,7 @@ export default function AttendancePage() {
                         <td style={isShort ? { color: 'var(--danger)', fontWeight: 700 } : undefined} title={isShort ? 'Worked less than 8 hr 30 min' : undefined}>
                           {r.hours}{isShort && <i className="fas fa-triangle-exclamation" style={{ marginLeft: 6 }} />}
                         </td>
-                        {raniwala && <td><ExtraHoursCell totalHours={r.rawHours} overtime={r.overtime_applicable} compOffCredit={r.compOffCredit} /></td>}
+                        {raniwala && <td><ExtraHoursCell totalHours={r.rawHours} overtime={r.overtime_applicable} compOffCredit={r.compOffCredit} offDay={r.offDay} /></td>}
                         <td>
                           <span className={`badge ${r.badgeCls}`}>{r.status}</span>
                           {r.outOfGeofence && (
@@ -658,6 +698,50 @@ export default function AttendancePage() {
                 </table>
               </div>
             </div>
+
+            {leaverData.length > 0 && (
+              <div className="card" style={{ marginTop: 24, borderColor: 'var(--danger)' }}>
+                <div className="card-header">
+                  <div>
+                    <h3 style={{ margin: 0 }}>Inactive employees · {monthLabelForTeamDate}</h3>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                      Left this month. Not counted in the staff totals above. Days are counted up to each one&apos;s last day.
+                    </div>
+                  </div>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr><th>Employee</th>{raniwala && <th>Division</th>}<th>Department</th><th>Last Day</th><th>Clock In</th><th>Clock Out</th><th>Working Hours</th><th>Status</th><th>Present Days ({monthLabelForTeamDate})</th><th>Absent Days</th></tr>
+                    </thead>
+                    <tbody>
+                      {leaverData.map((r) => (
+                        <tr key={r.id}>
+                          <td>
+                            <div className="emp-cell">
+                              <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(r.id)})` }}>{getInitials(r.first_name, r.last_name)}</div>
+                              <div><div className="emp-name">{fullName(r)}</div><div className="emp-role">{[r.employee_id, r.essl_employee_code ? `ESSL: ${r.essl_employee_code}` : ''].filter(Boolean).join(' · ') || '—'}</div></div>
+                            </div>
+                          </td>
+                          {raniwala && <td>{r.division || '—'}</td>}
+                          <td>{r.department || '—'}</td>
+                          <td title={r.exit_from_attendance ? 'Set Inactive without an offboarding: last attendance day' : 'Exit date from offboarding'}>
+                            {new Date(`${r.exit_date}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                            {r.exit_from_attendance && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>last attendance</div>}
+                          </td>
+                          <td>{r.clockInT}</td>
+                          <td>{r.clockOutT}</td>
+                          <td>{r.hours}</td>
+                          <td><span className={`badge ${r.badgeCls}`}>{r.status}</span></td>
+                          <td>{leaverMonthDays[r.id]?.present ?? 0}</td>
+                          <td>{leaverMonthDays[r.id]?.absent ?? 0}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </>
         )}
 
@@ -746,7 +830,7 @@ export default function AttendancePage() {
                         {lcInstances.length === 0 ? (
                           <tr><td colSpan={raniwala ? 6 : 5} style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>No late arrivals in this range.</td></tr>
                         ) : lcInstances.map((r, i) => {
-                          const isShort = isShortDay(r.rawHours);
+                          const isShort = !r.offDay && isShortDay(r.rawHours);
                           return (
                             <tr key={i} style={lcExceedingIds.has(r.emp.id) ? { background: 'var(--danger-light, #fee2e2)' } : undefined}>
                               <td>

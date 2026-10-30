@@ -17,7 +17,8 @@ export const RANIWALA_SHEET_SETTLED_MONTHS = ['2026-09'];
  * Paid without a punch: the employee's weekly off, a holiday of their outlet
  * (same precedence as My Team's calendar — an outlet with holidays switched
  * off only gets its weekly off) and approved leave of a paid type.
- * Unpaid: days before joining, a working day with no attendance row, Absent,
+ * Unpaid: days before joining, days after the exit date (`emp.exit_date`, the
+ * last day of an offboarding, 20261024_4), a working day with no attendance row, Absent,
  * Mispunch, Pending Approval and approved leave of an unpaid type; Half Day
  * loses half.
  *
@@ -34,6 +35,9 @@ export const RANIWALA_SHEET_SETTLED_MONTHS = ['2026-09'];
  * a day of leave: the day is paid in full when the other half was worked
  * (Half Day or better) and the leave is of a paid type, else what is missing
  * is unpaid. Both halves of a date approved = a whole day of leave.
+ * A full-day leave date they punched on (20261024_6) is scored from the
+ * punches, and the approved paid leave still covers whatever the punches
+ * don't (Half Day / Absent / Mispunch stay paid).
  *
  * `fromDay` / `toDay` limit the count to part of the month (a month HR pays
  * in two runs, see raniwalaSplitFor): days outside them are not counted.
@@ -52,10 +56,14 @@ export const RANIWALA_SHEET_SETTLED_MONTHS = ['2026-09'];
  * neighbour beyond that, today or later is unknown, so the weekly off stays
  * paid.
  *
- * Returns `{ paidDays, daysCounted, unpaidDays, lateCount, lateDeduction,
- * sandwichDates }`. daysCounted is how many days of the month were counted
- * (the whole month once it is over). paidDays is daysCounted minus unpaid
- * days, with the tenant's late-coming ladder already taken off.
+ * Returns `{ paidDays, paidBeforeLate, presentDays, daysCounted, unpaidDays,
+ * lateCount, lateDeduction, sandwichDates }`. daysCounted is how many days of
+ * the month were counted (the whole month once it is over). paidDays is
+ * daysCounted minus unpaid days, with the tenant's late-coming ladder already
+ * taken off; paidBeforeLate is the same before the ladder (Raniwala's Run
+ * Payroll uses that and takes off only HR's late deduction days, 30 Oct 2026). presentDays are
+ * the days actually attended (Present, Late, Travel, Show Visit; Half Day
+ * 0.5), weekly offs worked included, leave and comp off not.
  * sandwichDates are the weekly offs the sandwich rule made unpaid.
  */
 /** 'YYYY-MM-DD' plus n days. */
@@ -70,7 +78,7 @@ export function calendarPaidDays({
   sandwichDays = [], edgeDays = 0,
 }) {
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const offDays = getTenantWeeklyOffDays(tenant, outlet);
+  const offDays = getTenantWeeklyOffDays(tenant, outlet, emp);
   // An outlet with holidays switched off skips the tenant-wide ones only.
   const holidayDates = new Set(
     holidays
@@ -93,6 +101,7 @@ export function calendarPaidDays({
   const unpaidAbsence = (date) => {
     if (date < knownFrom || date > knownTo || (today && date >= today)) return false;
     if (emp.join_date && date < emp.join_date) return false;
+    if (emp.exit_date && date > emp.exit_date) return false;
     const dayLeaves = leavesOn(date);
     const leave = dayLeaves.find((lr) => !lr.half_day);
     if (leave) return !isPaidLeave(leave, date);
@@ -119,6 +128,7 @@ export function calendarPaidDays({
   let unpaidDays = 0;
   let daysCounted = 0;
   let lateCount = 0;
+  let presentDays = 0;
   const sandwichDates = [];
   const lastDay = Math.min(daysInMonth, toDay || daysInMonth);
   for (let day = fromDay; day <= lastDay; day++) {
@@ -137,6 +147,9 @@ export function calendarPaidDays({
     if (rec?.status === 'Late' && !offDay) lateCount += 1;
 
     if (emp.join_date && date < emp.join_date) { unpaidDays += 1; continue; }
+    if (emp.exit_date && date > emp.exit_date) { unpaidDays += 1; continue; }
+    if (rec?.status === 'Half Day') presentDays += 0.5;
+    else if (isFullPaidDayStatus(rec?.status) && rec.status !== 'Comp Off') presentDays += 1;
     if (offDay) {
       if (sandwichUnpaid(date, rec)) { unpaidDays += 1; sandwichDates.push(date); }
       continue;
@@ -157,15 +170,19 @@ export function calendarPaidDays({
       // A 'Leave' row with no request behind it (HR marked it by hand) is paid.
       if (leave && !isPaidLeave(leave, date)) unpaidDays += 1;
     } else if (rec.status === 'Half Day') {
-      unpaidDays += 0.5;
+      // Came in on a day of paid leave (20261024_6): the other half is leave.
+      if (!isPaidLeave(leave, date)) unpaidDays += 0.5;
     } else if (!isFullPaidDayStatus(rec.status)) {
-      unpaidDays += 1;
+      // ...and a few punches on a paid leave day never make it unpaid.
+      if (!isPaidLeave(leave, date)) unpaidDays += 1;
     }
   }
 
   const lateDeduction = settled ? 0 : computeLateDeductionDays(lateCount, tenant);
   return {
     paidDays: Math.max(0, daysCounted - unpaidDays - lateDeduction),
+    paidBeforeLate: Math.max(0, daysCounted - unpaidDays),
+    presentDays,
     daysCounted,
     unpaidDays,
     lateCount,

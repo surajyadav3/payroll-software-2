@@ -7,7 +7,7 @@ import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { submitRegularizeRequest, listMyRegularizeRequests } from '@/services/attendanceService';
 import { fetchMyQuota, SELF_LIMIT } from '@/services/requestQuotaService';
-import { todayStr, fmtTime12, regularizeMinDate, regularizeWindowLabel, isRaniwalaTenant } from '@/lib/helpers';
+import { todayStr, fmtTime12, fullName, regularizeMinDate, regularizeWindowLabel, isRaniwalaTenant } from '@/lib/helpers';
 
 const STATUS_BADGE = {
   Pending:  'badge-warning',
@@ -15,8 +15,12 @@ const STATUS_BADGE = {
   Rejected: 'badge-danger',
 };
 
-export function RegularizeContent() {
-  const { profile, tenant } = useAuth();
+// `member`: an L1 filing for one of their people (l1Service, a row of
+// my_l1_members) — the list and the request are that employee's. `openFor`
+// ({ date, clockInTime, clockOutTime }) opens the form for that day.
+export function RegularizeContent({ member = null, openFor = null } = {}) {
+  const { profile: me, tenant } = useAuth();
+  const profile = member || me;
   const [requests,  setRequests]  = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [filter,    setFilter]    = useState('Pending');
@@ -43,10 +47,10 @@ export function RegularizeContent() {
   const autoApprovalLimit   = tenant?.regularize_auto_approval_limit ?? SELF_LIMIT;
 
   const loadQuota = useCallback(async () => {
-    if (!profile || !tenant) return;
+    if (!profile || !tenant || member) return; // an L1 can't read the employee's quota
     const q = await fetchMyQuota(tenant.id, profile.id, autoApprovalEnabled ? autoApprovalLimit : 0);
     setQuota(q);
-  }, [profile, tenant, autoApprovalEnabled, autoApprovalLimit]);
+  }, [profile, tenant, member, autoApprovalEnabled, autoApprovalLimit]);
 
   useEffect(() => { fetchRequests(); loadQuota(); }, [fetchRequests, loadQuota]);
 
@@ -59,6 +63,17 @@ export function RegularizeContent() {
     });
     setShowModal(true);
   };
+
+  useEffect(() => {
+    if (!openFor) return;
+    setForm({
+      date: openFor.date,
+      clockInTime:  openFor.clockInTime  || tenant?.shift_start || '',
+      clockOutTime: openFor.clockOutTime || tenant?.shift_end   || '',
+      reason: '',
+    });
+    setShowModal(true);
+  }, [openFor, tenant]);
 
   const handleSubmit = async () => {
     if (!form.date) return showToast('Please select the date', 'error');
@@ -76,9 +91,11 @@ export function RegularizeContent() {
         clockInTime:  form.clockInTime,
         clockOutTime: form.clockOutTime,
         reason:       form.reason.trim(),
-      }, { autoApprovalEnabled, autoApprovalLimit });
+      }, { autoApprovalEnabled, autoApprovalLimit, asL1: !!member });
       if (error) throw error;
-      const msg = tier === 'self'
+      const msg = member
+        ? `Sent for approval${member.manager_name ? ` to ${member.manager_name}` : ''}, as if ${member.first_name} sent it`
+        : tier === 'self'
         ? 'Auto-approved! Attendance updated instantly.'
         : tier === 'manager'
         ? 'Sent to your manager for approval — HR gets a copy'
@@ -98,7 +115,7 @@ export function RegularizeContent() {
 
   return (
     <>
-      <div className="page-content">
+      <div className={member ? '' : 'page-content'}>
         <RegularizeExtensionNotice tenant={tenant} />
 
         {/* Raniwala regularizations always go to the reporting manager — no self-approval quota to show. */}
@@ -203,7 +220,7 @@ export function RegularizeContent() {
       <Modal
         show={showModal}
         onClose={() => setShowModal(false)}
-        title="Request Attendance Regularization"
+        title={member ? `Regularize for ${fullName(member)}` : 'Request Attendance Regularization'}
         width="460px"
         footer={
           <>
@@ -222,7 +239,10 @@ export function RegularizeContent() {
           <label className="form-label">Date *</label>
           <input type="date" className="form-input" min={regularizeMinDate(tenant)} max={todayStr()} value={form.date}
             onChange={e => setForm({ ...form, date: e.target.value })} />
-          <div className="form-hint">You can request a correction for {regularizeWindowLabel(tenant)} only. It goes to your manager for approval, and HR gets a copy (either can approve).</div>
+          <div className="form-hint">
+            You can request a correction for {regularizeWindowLabel(tenant)} only. It goes to {member ? `${member.first_name}'s` : 'your'} manager
+            for approval, and HR gets a copy (either can approve).
+          </div>
         </div>
         <div className="form-row">
           <div className="form-group">

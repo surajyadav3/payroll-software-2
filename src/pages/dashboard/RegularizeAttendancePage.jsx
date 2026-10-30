@@ -3,24 +3,28 @@ import Header from '@/components/Header';
 import OutletSelect from '@/components/OutletSelect';
 import Modal from '@/components/Modal';
 import { showToast } from '@/components/Toast';
+import BulkApproveBar, { BulkHeadCell, BulkRowCell } from '@/components/BulkApproveBar';
+import { useBulkApproval } from '@/hooks/useBulkApproval';
 import { useAuth } from '@/context/AuthContext';
-import { useOutletView } from '@/context/OutletViewContext';
+import { useRequestOutletScope } from '@/context/OutletViewContext';
 import {
   listRegularizeRequests, approveRegularizeRequest, rejectRegularizeRequest,
-  regularizeAttendance,
+  regularizeAttendance, updateRegularizeRequestTimes,
 } from '@/services/attendanceService';
 import { listActiveEmployees } from '@/services/employeeService';
-import { fmt, getInitials, getAvatarColor, todayStr, fullName, scopedToOutlet } from '@/lib/helpers';
+import { fmt, getInitials, getAvatarColor, todayStr, fullName, scopedToOutlet, matchesSearch } from '@/lib/helpers';
+import { exportRequestSheet, fmtExportDateTime, approverRoleLabel } from '@/lib/requestExport';
 
 export default function RegularizeAttendancePage() {
   const { profile, tenant } = useAuth();
-  const { outletProfileIds } = useOutletView();
+  const outletProfileIds = useRequestOutletScope();
   const isAdmin   = profile?.role === 'admin' || profile?.role === 'superadmin';
 
   const [requests,   setRequests]   = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [statusFilter, setStatusFilter] = useState('Pending');
-  const [acting,     setActing]     = useState(null); // request id being approved/rejected
+  const [search,     setSearch]     = useState('');
+  const [acting,    setActing]     = useState(null); // request id being approved/rejected
 
   // Bulk regularize (admin only)
   const [showBulk,   setShowBulk]   = useState(false);
@@ -45,7 +49,7 @@ export default function RegularizeAttendancePage() {
   const isManager = profile?.role === 'manager';
 
   const fetchRequests = useCallback(async () => {
-    if (!tenant) return;
+    if (!tenant || outletProfileIds === undefined) return;
     setLoading(true);
     try {
       // Everyone sees every regularize request tenant-wide (any status, any
@@ -94,6 +98,37 @@ export default function RegularizeAttendancePage() {
     }
   };
 
+  // HR edits a pending request's times (e.g. an AM / PM slip) before approving.
+  const [editReq, setEditReq]   = useState(null);
+  const [editForm, setEditForm] = useState({ clockInTime: '', clockOutTime: '' });
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  const openEdit = (req) => {
+    setEditForm({
+      clockInTime:  (req.clock_in_time  || '').slice(0, 5),
+      clockOutTime: (req.clock_out_time || '').slice(0, 5),
+    });
+    setEditReq(req);
+  };
+
+  const handleSaveEdit = async () => {
+    const { clockInTime, clockOutTime } = editForm;
+    if (!clockInTime || !clockOutTime) return showToast('Enter both Clock In and Clock Out', 'error');
+    if (clockOutTime <= clockInTime) return showToast('Clock Out must be later than Clock In. Please check AM / PM.', 'error');
+    setSavingEdit(true);
+    try {
+      const { error } = await updateRegularizeRequestTimes(editReq.id, clockInTime, clockOutTime);
+      if (error) throw error;
+      showToast('Times updated. Approve the request to apply them.', 'success');
+      setEditReq(null);
+      fetchRequests();
+    } catch (err) {
+      showToast('Could not update times: ' + err.message, 'error');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   const handleBulkRegularize = async () => {
     if (!bulkForm.fromDate || !bulkForm.toDate) return showToast('Select a date range', 'error');
     if (selectedEmps.length === 0) return showToast('Select at least one employee', 'error');
@@ -117,11 +152,22 @@ export default function RegularizeAttendancePage() {
     }
   };
 
-  const filtered = statusFilter === 'All'
-    ? requests
-    : requests.filter(r => r.status === statusFilter);
+  const filtered = requests.filter(r =>
+    (statusFilter === 'All' || r.status === statusFilter)
+    && matchesSearch(search, fullName(r.profile), r.profile?.employee_id, r.profile?.department, r.profile?.designation));
 
   const pendingCount = requests.filter(r => r.status === 'Pending').length;
+
+  const bulk = useBulkApproval({
+    rows: filtered,
+    loading,
+    // Same gate as the per-row buttons below.
+    canAct: (req) => req.status === 'Pending' && (!isManager || req.required_approver_role === 'manager'),
+    onDone: fetchRequests,
+    decide: (req, approve) => (approve
+      ? approveRegularizeRequest(req, profile.id, profile.role)
+      : rejectRegularizeRequest(req.id, profile.id)),
+  });
 
   const fmtTime12 = (t) => {
     if (!t) return '—';
@@ -140,8 +186,38 @@ export default function RegularizeAttendancePage() {
   const reviewerLabel = (reviewer) => {
     if (!reviewer) return null;
     const name = fullName(reviewer);
-    const role = reviewer.role === 'admin' ? 'Admin' : reviewer.role === 'manager' ? 'Manager' : reviewer.role;
+    const role = reviewer.role === 'admin' ? 'HR' : reviewer.role === 'manager' ? 'Manager'
+      : reviewer.role === 'hod' ? 'HOD' : reviewer.role;
     return { name, role };
+  };
+
+  const exportList = () => {
+    const pending = statusFilter === 'Pending';
+    exportRequestSheet(filtered.map((req) => {
+      const rev = reviewerLabel(req.reviewer);
+      return {
+        'Emp Code': req.profile?.employee_id || '',
+        Employee: fullName(req.profile),
+        Department: req.profile?.department || '',
+        Designation: req.profile?.designation || '',
+        'Attendance Date': fmt.date(req.date),
+        'Clock In': req.clock_in_time ? fmtTime12(req.clock_in_time) : '',
+        'Clock Out': req.clock_out_time ? fmtTime12(req.clock_out_time) : '',
+        Reason: req.reason || '',
+        Status: req.status,
+        'Submitted On': fmtExportDateTime(req.created_at),
+        ...(pending
+          ? { 'Waiting On': approverRoleLabel(req.required_approver_role) }
+          : {
+            'Reviewed By': req.approval_level === 'self' ? 'Auto-approved' : rev ? `${rev.name} (${rev.role})` : '',
+            'Reviewed On': fmtExportDateTime(req.reviewed_at),
+          }),
+      };
+    }), {
+      sheet: `${statusFilter} Regularize`,
+      file: `${statusFilter} regularize requests`,
+      widths: [10, 24, 18, 18, 14, 10, 10, 40, 10, 22, ...(pending ? [14] : [28, 22])],
+    });
   };
 
   return (
@@ -170,18 +246,35 @@ export default function RegularizeAttendancePage() {
               )}
             </button>
           ))}
+          <input
+            className="form-input"
+            style={{ maxWidth: 220 }}
+            placeholder="Search employee, EMP code…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <button
+            className="btn btn-sm btn-outline"
+            style={{ marginLeft: 'auto' }}
+            onClick={exportList}
+            disabled={loading || filtered.length === 0}
+          >
+            <i className="fas fa-file-excel" style={{ marginRight: 6 }} />Export
+          </button>
           {isAdmin && (
-            <button className="btn btn-outline" style={{ marginLeft: 'auto' }} onClick={openBulk}>
+            <button className="btn btn-outline" onClick={openBulk}>
               <i className="fas fa-edit" /> Bulk Regularize
             </button>
           )}
         </div>
 
         <div className="card">
+          <BulkApproveBar bulk={bulk} />
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
+                  <BulkHeadCell bulk={bulk} />
                   <th>Employee</th>
                   <th>Submitted On</th>
                   <th>Attendance Date</th>
@@ -203,13 +296,14 @@ export default function RegularizeAttendancePage() {
                 ) : filtered.length === 0 ? (
                   <tr>
                     <td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>
-                      No {statusFilter !== 'All' ? statusFilter.toLowerCase() : ''} requests found.
+                      No {statusFilter !== 'All' ? statusFilter.toLowerCase() : ''} requests found{search.trim() ? ` for "${search.trim()}"` : ''}.
                     </td>
                   </tr>
                 ) : filtered.map(req => {
                   const rev = reviewerLabel(req.reviewer);
                   return (
                     <tr key={req.id}>
+                      <BulkRowCell bulk={bulk} row={req} />
                       {/* Employee */}
                       <td>
                         <div className="emp-cell">
@@ -248,6 +342,12 @@ export default function RegularizeAttendancePage() {
                           <i className="fas fa-sign-out-alt" style={{ marginRight: 4, fontSize: 11 }} />
                           {fmtTime12(req.clock_out_time)}
                         </span>
+                        {req.clock_in_time && req.clock_out_time && req.clock_out_time <= req.clock_in_time && (
+                          <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 2 }}>
+                            <i className="fas fa-exclamation-triangle" style={{ marginRight: 4 }} />
+                            Clock Out before Clock In - check AM / PM
+                          </div>
+                        )}
                       </td>
 
                       {/* Reason */}
@@ -292,7 +392,7 @@ export default function RegularizeAttendancePage() {
                             <button
                               className="btn btn-sm btn-success"
                               title="Approve"
-                              disabled={acting === req.id}
+                              disabled={acting === req.id || bulk.busy}
                               onClick={() => handleApprove(req)}
                             >
                               {acting === req.id
@@ -302,11 +402,21 @@ export default function RegularizeAttendancePage() {
                             <button
                               className="btn btn-sm btn-danger"
                               title="Reject"
-                              disabled={acting === req.id}
+                              disabled={acting === req.id || bulk.busy}
                               onClick={() => handleReject(req)}
                             >
                               <i className="fas fa-times" />
                             </button>
+                            {isAdmin && (
+                              <button
+                                className="btn btn-sm btn-outline"
+                                title="Edit times"
+                                disabled={acting === req.id || bulk.busy}
+                                onClick={() => openEdit(req)}
+                              >
+                                <i className="fas fa-pen" />
+                              </button>
+                            )}
                           </div>
                         )}
                         {req.status === 'Pending' && isManager && req.required_approver_role !== 'manager' && (
@@ -323,6 +433,57 @@ export default function RegularizeAttendancePage() {
           </div>
         </div>
       </div>
+
+      {/* Edit a pending request's times — admin only */}
+      {isAdmin && (
+        <Modal
+          show={!!editReq}
+          onClose={() => setEditReq(null)}
+          title="Edit Request Times"
+          width="440px"
+          footer={
+            <>
+              <button className="btn btn-outline" onClick={() => setEditReq(null)} disabled={savingEdit}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleSaveEdit} disabled={savingEdit}>
+                {savingEdit
+                  ? <><div className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Saving…</>
+                  : <><i className="fas fa-save" /> Save times</>}
+              </button>
+            </>
+          }
+        >
+          {editReq && (
+            <>
+              <div style={{ fontSize: 13, marginBottom: 12 }}>
+                <strong>{fullName(editReq.profile)}</strong>
+                {editReq.profile?.employee_id ? ` (${editReq.profile.employee_id})` : ''} ·{' '}
+                {new Date(editReq.date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>
+                  Requested {fmtTime12(editReq.clock_in_time)} → {fmtTime12(editReq.clock_out_time)}
+                </div>
+                {editReq.reason && (
+                  <div style={{ color: 'var(--text-secondary)', marginTop: 4 }}>Reason: {editReq.reason}</div>
+                )}
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">Clock In *</label>
+                  <input type="time" className="form-input" value={editForm.clockInTime}
+                    onChange={e => setEditForm({ ...editForm, clockInTime: e.target.value })} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Clock Out *</label>
+                  <input type="time" className="form-input" value={editForm.clockOutTime}
+                    onChange={e => setEditForm({ ...editForm, clockOutTime: e.target.value })} />
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Saving only changes the times. Approve the request afterwards to apply them to the day.
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
 
       {/* Bulk Regularize Modal — admin only */}
       {isAdmin && (

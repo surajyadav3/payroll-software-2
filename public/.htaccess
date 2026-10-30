@@ -1,0 +1,29 @@
+# Hostinger (LiteSpeed) config for the CrewCore SPA. Vite copies this into dist/.
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # A missing hashed asset must 404, not fall through to index.html —
+  # otherwise the browser gets HTML for a .js file and the page renders blank.
+  RewriteRule ^assets/ - [L]
+
+  # Real files and folders are served as-is; every other path is a React route.
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule . /index.html [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+  # index.html names the current build's files, so it must never be cached.
+  <FilesMatch "^index\.html$">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+  </FilesMatch>
+
+  # Hashed build files never change under the same name, so cache them for a year.
+  <If "%{REQUEST_URI} =~ m#^/assets/#">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </If>
+</IfModule>

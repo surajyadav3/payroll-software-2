@@ -45,7 +45,10 @@ export async function fetchOutletsOverview(tenantId) {
 
   const outletIdByProfile = new Map(employees.map((e) => [e.id, e.outlet_id || null]));
 
-  const blank = () => ({ employee_count: 0, present_today: 0, late_today: 0, absent_today: 0, pending_leaves: 0 });
+  const blank = () => ({
+    employee_count: 0, present_today: 0, late_today: 0, absent_today: 0,
+    half_day_today: 0, on_leave_today: 0, on_duty_today: 0, review_today: 0, pending_leaves: 0,
+  });
   const statsByOutlet = new Map(outlets.map((o) => [o.id, blank()]));
   statsByOutlet.set(null, blank()); // unassigned bucket
 
@@ -62,6 +65,10 @@ export async function fetchOutletsOverview(tenantId) {
     if (a.status === 'Present' || a.status === 'Late') s.present_today++;
     if (a.status === 'Late') s.late_today++;
     if (a.status === 'Absent') s.absent_today++;
+    if (a.status === 'Half Day') s.half_day_today++;
+    if (a.status === 'Leave' || a.status === 'Comp Off') s.on_leave_today++;
+    if (a.status === 'Travel' || a.status === 'Show Visit') s.on_duty_today++; // worked, off-site
+    if (a.status === 'Mispunch' || a.status === 'Pending Approval') s.review_today++; // needs HR/manager action
   });
 
   leaves.forEach((l) => {

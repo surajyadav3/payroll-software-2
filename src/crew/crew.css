@@ -1,0 +1,103 @@
+/* ============================================================================
+   Styles for src/crew — the Work (tasks, projects, messages) and Performance
+   screens ported from the new CrewCore platform (E:\CrewCore HRMS, apps/web).
+
+   Those screens are written with Tailwind utility classes, so Tailwind is
+   loaded here — for them only:
+     • theme + utilities, no global preflight (the rest of the app keeps its
+       own stylesheet, src/index.css + src/styles/theme-crewcore.css);
+     • utilities are generated only for class names used under src/crew
+       (source(none) + @source), every one of them nested under .ccw
+       (utilities.css) so they cannot touch the rest of the app, and !important
+       so the app's element-level rules (th, td, button…) can never win over them;
+     • the reset below is scoped to .ccw too — the wrapper CrewRoot puts around
+       every ported screen. Utilities do not apply to the .ccw element itself,
+       only inside it.
+   ============================================================================ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "./utilities.css" layer(utilities) source(none) important;
+@import "./tokens.css";
+@import "./tailwind-theme.css";
+@source "./";
+
+/* This app is light-only: `dark:` classes in the ported code apply only inside .cc-dark (never set). */
+@custom-variant dark (&:where(.cc-dark, .cc-dark *));
+
+/* ── Reset, scoped to the ported screens (Tailwind's preflight, the parts they rely on) ──
+   Selectors start with :root so they outrank the app's own element rules
+   ([data-ui="crewcore"] th, tr:hover td, …). Utilities still win: they are !important. */
+:root .ccw,
+:root .ccw *,
+:root .ccw ::before,
+:root .ccw ::after {
+  box-sizing: border-box;
+  border: 0 solid;
+}
+:root .ccw {
+  font-family: var(--cc-font-sans);
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--cc-fg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  -webkit-text-size-adjust: 100%;
+  tab-size: 4;
+}
+:root .ccw h1, :root .ccw h2, :root .ccw h3, :root .ccw h4, :root .ccw h5, :root .ccw h6 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+:root .ccw ol, :root .ccw ul, :root .ccw menu { list-style: none; }
+:root .ccw a { color: inherit; text-decoration: inherit; }
+:root .ccw b, :root .ccw strong { font-weight: bolder; }
+:root .ccw img, :root .ccw svg, :root .ccw video, :root .ccw canvas { display: block; vertical-align: middle; }
+:root .ccw button,
+:root .ccw input,
+:root .ccw select,
+:root .ccw optgroup,
+:root .ccw textarea {
+  font: inherit;
+  font-feature-settings: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  border-radius: 0;
+  background-color: transparent;
+  opacity: 1;
+}
+:root .ccw button { appearance: button; text-align: center; }
+:root .ccw textarea { resize: vertical; }
+:root .ccw ::placeholder { opacity: 1; color: color-mix(in oklab, currentColor 50%, transparent); }
+:root .ccw [hidden]:where(:not([hidden="until-found"])) { display: none !important; }
+:root .ccw table { width: auto; text-indent: 0; border-color: inherit; border-collapse: collapse; }
+:root .ccw th,
+:root .ccw td,
+:root .ccw tr:hover td,
+:root .ccw tr:last-child td {
+  padding: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  text-transform: none;
+  letter-spacing: inherit;
+  color: inherit;
+  background: transparent;
+  border-bottom-width: 0;
+  vertical-align: inherit;
+  text-align: inherit;
+}
+:root .ccw *:focus-visible { outline: 2px solid var(--cc-focus-ring); outline-offset: 2px; }
+
+/* ── The platform's own small helpers (apps/web/src/styles.css) ── */
+/* Numbers that change (timers, counts) don't jiggle. */
+.ccw .tabular { font-variant-numeric: tabular-nums; }
+/* Thin, quiet scrollbars inside panels. */
+.ccw .scroll-quiet { scrollbar-width: thin; scrollbar-color: var(--cc-border-strong) transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ccw *,
+  .ccw *::before,
+  .ccw *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

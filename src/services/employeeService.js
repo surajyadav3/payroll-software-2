@@ -179,7 +179,7 @@ export async function listColleagues(tenantId) {
   return { data: data || [], error };
 }
 
-const EMPLOYEE_ADMIN_COLUMNS = 'id, first_name, middle_name, last_name, department, designation, division, ctc, role, country, join_date, probation_months, pf_enabled, pf_number, pf_amount, esic_enabled, esic_amount, leave_allocation, employee_id, essl_employee_code, outlet_id, outlet_location, is_withheld, withheld_reason, bank_acc, bank_name, ifsc_code, manager_id, comp_off_balance, overtime_applicable, comp_off_eligible, weekly_holiday';
+const EMPLOYEE_ADMIN_COLUMNS = 'id, first_name, middle_name, last_name, department, designation, division, ctc, role, country, join_date, probation_months, pf_enabled, pf_number, pf_amount, esic_enabled, esic_number, esic_amount, leave_allocation, employee_id, essl_employee_code, outlet_id, outlet_location, is_withheld, withheld_reason, bank_acc, bank_name, ifsc_code, manager_id, comp_off_balance, overtime_applicable, comp_off_eligible, weekly_holiday';
 
 export async function listActiveEmployees(tenantId) {
   const { data, error } = await supabase
@@ -190,6 +190,69 @@ export async function listActiveEmployees(tenantId) {
     .in('role', STAFF_ROLES)
     .order('first_name');
   return { data: data || [], error };
+}
+
+/**
+ * Inactive staff whose last day is on or after `since` (YYYY-MM-DD), each
+ * with `exit_date` = that last day and `inactive: true`. The last day is the
+ * latest non-cancelled offboarding's exit date; someone set Inactive by hand
+ * with no offboarding gets their last attendance day instead
+ * (`exit_from_attendance`). Anyone who left before `since` is not listed, so
+ * a September leaver never shows in October.
+ */
+export async function listLeaversSince(tenantId, since) {
+  const [inactiveRes, exitRes] = await Promise.all([
+    supabase.from('profiles').select(EMPLOYEE_ADMIN_COLUMNS)
+      .eq('tenant_id', tenantId).neq('status', 'Active').in('role', STAFF_ROLES),
+    supabase.from('offboarding_processes').select('profile_id, exit_date')
+      .eq('tenant_id', tenantId).neq('status', 'Cancelled'),
+  ]);
+  const inactive = inactiveRes.data || [];
+  const exitOn = {};
+  (exitRes.data || []).forEach((o) => {
+    if (o.exit_date && (!exitOn[o.profile_id] || o.exit_date > exitOn[o.profile_id])) exitOn[o.profile_id] = o.exit_date;
+  });
+  const noOffboarding = inactive.filter((e) => !exitOn[e.id]).map((e) => e.id);
+  const lastAtt = {};
+  let attError = null;
+  if (noOffboarding.length) {
+    const { data, error } = await supabase.from('attendance').select('profile_id, date')
+      .eq('tenant_id', tenantId).in('profile_id', noOffboarding).gte('date', since);
+    attError = error;
+    (data || []).forEach((a) => { if (!lastAtt[a.profile_id] || a.date > lastAtt[a.profile_id]) lastAtt[a.profile_id] = a.date; });
+  }
+  const data = inactive
+    .map((e) => (exitOn[e.id]
+      ? { ...e, inactive: true, exit_date: exitOn[e.id] }
+      : { ...e, inactive: true, exit_date: lastAtt[e.id] || null, exit_from_attendance: true }))
+    .filter((e) => e.exit_date && e.exit_date >= since);
+  return { data, error: inactiveRes.error || exitRes.error || attError };
+}
+
+/**
+ * Payroll's employees for a month: Active staff plus leavers whose last day
+ * is on or after `monthStart` (YYYY-MM-DD, see listLeaversSince). The DB
+ * sets a leaver Inactive the day after their exit date (20261024_4), but
+ * their last month is still paid — up to the exit date only. An Active
+ * employee with a non-cancelled offboarding ending on or after `monthStart`
+ * carries that `exit_date` too; payroll pays no day after it.
+ */
+export async function listPayrollEmployees(tenantId, monthStart) {
+  const [activeRes, exitRes, leaversRes] = await Promise.all([
+    listActiveEmployees(tenantId),
+    supabase.from('offboarding_processes').select('profile_id, exit_date')
+      .eq('tenant_id', tenantId).neq('status', 'Cancelled').gte('exit_date', monthStart),
+    listLeaversSince(tenantId, monthStart),
+  ]);
+  const exitOn = {};
+  (exitRes.data || []).forEach((o) => {
+    if (!exitOn[o.profile_id] || o.exit_date > exitOn[o.profile_id]) exitOn[o.profile_id] = o.exit_date;
+  });
+  const withExit = (e) => (exitOn[e.id] ? { ...e, exit_date: exitOn[e.id] } : e);
+  const activeIds = new Set(activeRes.data.map((e) => e.id));
+  const leavers = leaversRes.data.filter((e) => !activeIds.has(e.id));
+  const all = [...activeRes.data.map(withExit), ...leavers].sort((a, b) => (a.first_name || '').localeCompare(b.first_name || ''));
+  return { data: all, error: activeRes.error || exitRes.error || leaversRes.error };
 }
 
 /**

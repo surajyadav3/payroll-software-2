@@ -3,8 +3,9 @@ import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { fetchTeamMonth, findAncestorWithRole } from '@/services/teamService';
+import { requestHalfDayLabel } from '@/lib/halfDayLeave';
 import {
-  fullName, getInitials, getAvatarColor, dateStr, monthLabel, getTenantWeeklyOffDays,
+  fullName, getInitials, getAvatarColor, dateStr, monthLabel, getTenantWeeklyOffDays, holidayForEmployee,
 } from '@/lib/helpers';
 
 const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -193,16 +194,18 @@ export default function MyTeamPage() {
 
     return (m, d) => {
       const ds = dateStr(d);
-      // An outlet with holidays switched off (outlets.holidays_enabled) skips the
-      // company-wide holidays but keeps the ones added for that outlet.
-      const holiday = holidays.find((h) => h.date === ds && (h.outlet_id
-        ? h.outlet_id === m.outlet_id
-        : outletById.get(m.outlet_id)?.holidays_enabled !== false));
+      // The member's outlet holiday (company-wide ones skipped where the outlet
+      // has holidays off); none before the joining date.
+      const holiday = holidayForEmployee(holidays, ds,
+        { outlet_id: m.outlet_id, join_date: detailById.get(m.id)?.join_date }, outletById.get(m.outlet_id));
       if (holiday) return { kind: 'holiday', title: holiday.name };
       const leave = leaves.find((l) => l.profile_id === m.id && inRange(ds, l.start_date, l.end_date));
-      if (leave) return { kind: leave.status === 'Approved' ? 'leave' : 'leave-pending', title: `${leave.leave_type} (${leave.status})` };
+      if (leave) {
+        const half = requestHalfDayLabel(leave);
+        return { kind: leave.status === 'Approved' ? 'leave' : 'leave-pending', title: `${leave.leave_type}${half ? ` — ${half}` : ''} (${leave.status})` };
+      }
       if (wfh.some((w) => w.profile_id === m.id && inRange(ds, w.from_date, w.to_date))) return { kind: 'wfh', title: 'Work from home' };
-      if (getTenantWeeklyOffDays(tenant, outletById.get(m.outlet_id)).includes(d.getDay())) return { kind: 'off', title: 'Weekly off' };
+      if (getTenantWeeklyOffDays(tenant, outletById.get(m.outlet_id), detailById.get(m.id)).includes(d.getDay())) return { kind: 'off', title: 'Weekly off' };
       const att = attByKey.get(`${m.id}|${ds}`);
       if (att) {
         if (att.status === 'Late') return { kind: 'late', title: 'Late' };

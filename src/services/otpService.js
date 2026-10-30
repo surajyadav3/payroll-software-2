@@ -19,7 +19,20 @@ export function detectIdentifierType(identifier) {
 }
 
 /**
- * Send a 6-digit OTP to the given email using Custom Edge Function + Nodemailer.
+ * What the OTP login field sends: an email as typed, or a mobile number reduced
+ * to its 10 digits so "+91 98765 43210" / "098765 43210" work too.
+ */
+export function toOtpIdentifier(raw) {
+    const t = (raw || '').trim();
+    if (t.includes('@')) return t;
+    let d = t.replace(/\D/g, '');
+    if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+    else if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+    return d;
+}
+
+/**
+ * Send a 6-digit OTP: email via send-otp (Nodemailer), mobile via send-sms-otp (MSG91).
  */
 export async function sendOtp(identifier, options = { shouldCreateUser: true }) {
     const id = (identifier || '').trim();

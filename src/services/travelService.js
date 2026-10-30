@@ -15,7 +15,7 @@ export async function listMyTravelRequests(profileId) {
 export async function listTenantTravelRequests(tenantId) {
   const { data, error } = await supabase
     .from('travel_requests')
-    .select('*, legs:travel_legs(*), profile:profile_directory!travel_requests_profile_id_fkey(first_name, middle_name, last_name)')
+    .select('*, legs:travel_legs(*), profile:profile_directory!travel_requests_profile_id_fkey(first_name, middle_name, last_name, employee_id, department)')
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
   return { data: data || [], error };

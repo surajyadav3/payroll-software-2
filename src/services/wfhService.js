@@ -3,7 +3,7 @@ import { notifyProfiles, notifyRoles, withHrRole, getRequesterLabel } from './no
 
 const SELECT = `
   *,
-  profile:profile_directory!wfh_requests_profile_id_fkey(first_name, middle_name, last_name, department, designation),
+  profile:profile_directory!wfh_requests_profile_id_fkey(first_name, middle_name, last_name, department, designation, employee_id),
   reviewer:profile_directory!wfh_requests_reviewed_by_fkey(first_name, middle_name, last_name, role)
 `;
 

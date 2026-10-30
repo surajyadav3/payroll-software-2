@@ -5,6 +5,7 @@ import { resolveAttendanceSettings, listAccessibleOutlets, getOutlet } from './t
 import { isFeatureEnabledForOutlet } from './featureService';
 import { getApprovedWfhForDate } from './wfhService';
 import { notifyProfiles, notifyRoles, withHrRole, getRequesterLabel } from './notificationService';
+import { l1RequestRegularize } from './l1Service';
 
 /** Full month attendance (with punches) for one employee — used in calendar views. */
 export async function fetchMyMonthAttendance(profileId, year, month) {
@@ -436,19 +437,41 @@ export async function fetchMyMonthStats(profileId, year, month) {
   return { presentDays, error };
 }
 
-/** Fetch all attendance records for a tenant for a given month/year. */
+/**
+ * Fetch all attendance records for a tenant for a given month/year.
+ *
+ * Paginated: PostgREST returns at most 1000 rows per request, and a month is
+ * far more than that for a large tenant (Raniwala: ~6,000). Unpaged, Run
+ * Payroll worked out paid days from whichever 1000 rows came back — every
+ * day that fell outside them looked like a day with no punch. (profile_id,
+ * date) is unique, so ordering by both keeps the pages from overlapping.
+ */
 export async function fetchAllTenantAttendance(tenantId, year, month) {
   const startDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
   const endDay    = new Date(year, month + 1, 0).getDate();
   const endDate   = `${year}-${String(month + 1).padStart(2, '0')}-${endDay}`;
+  return fetchTenantAttendanceInRange(tenantId, startDate, endDate);
+}
 
-  const { data, error } = await supabase
-    .from('attendance')
-    .select('profile_id, status, date, total_hours')
-    .eq('tenant_id', tenantId)
-    .gte('date', startDate)
-    .lte('date', endDate);
-  return { data: data || [], error };
+/** Same rows as fetchAllTenantAttendance for any date range, paged the same way. */
+export async function fetchTenantAttendanceInRange(tenantId, startDate, endDate) {
+  const PAGE_SIZE = 1000;
+  const all = [];
+  for (let page = 0; ; page++) {
+    const { data, error } = await supabase
+      .from('attendance')
+      .select('profile_id, status, date, total_hours')
+      .eq('tenant_id', tenantId)
+      .gte('date', startDate)
+      .lte('date', endDate)
+      .order('date')
+      .order('profile_id')
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+    if (error) return { data: all, error };
+    all.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) break;
+  }
+  return { data: all, error: null };
 }
 
 /**
@@ -463,11 +486,12 @@ export async function fetchAttendanceRangeWithPunches(tenantId, fromDate, toDate
   for (let page = 0; ; page++) {
     const { data, error } = await supabase
       .from('attendance')
-      .select('profile_id, date, status, total_hours, punches(punch_time, punch_type)')
+      .select('profile_id, date, status, total_hours, comp_off_credit, comp_off_granted, punches(punch_time, punch_type, next_day)')
       .eq('tenant_id', tenantId)
       .gte('date', fromDate)
       .lte('date', toDate)
       .order('date')
+      .order('profile_id')
       .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
     if (error) return { data: all, error };
     all.push(...(data || []));
@@ -510,11 +534,12 @@ export async function fetchAllAttendanceWithPunches(tenantId, year = new Date().
   for (let page = 0; ; page++) {
     const { data, error } = await supabase
       .from('attendance')
-      .select('id, profile_id, date, status, total_hours, punches(punch_time, punch_type)')
+      .select('id, profile_id, date, status, total_hours, punches(punch_time, punch_type, next_day)')
       .eq('tenant_id', tenantId)
       .gte('date', `${year}-01-01`)
       .lte('date', `${year}-12-31`)
       .order('date')
+      .order('profile_id')
       .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
     if (error) return { data: all, error };
     all.push(...(data || []));
@@ -527,7 +552,7 @@ export async function fetchAllAttendanceWithPunches(tenantId, year = new Date().
 export async function fetchEmployeeProfileInfo(profileId) {
   const { data, error } = await supabase
     .from('profiles')
-    .select('first_name, middle_name, last_name, join_date, probation_months, department, designation')
+    .select('first_name, middle_name, last_name, join_date, probation_months, department, designation, comp_off_balance')
     .eq('id', profileId)
     .single();
   return { profile: data, error };
@@ -544,7 +569,7 @@ export async function fetchEmployeeFullHistory(profileId) {
   // Fetch all attendance records (no date filter yet — need earliest to compute fromDate)
   const { data: allRecords, error } = await supabase
     .from('attendance')
-    .select('date, status, total_hours, punches(punch_time, punch_type)')
+    .select('date, status, total_hours, punches(punch_time, punch_type, next_day)')
     .eq('profile_id', profileId)
     .order('date');
 
@@ -573,6 +598,15 @@ export async function fetchEmployeeFullHistory(profileId) {
  * When tier === 'self' the attendance change is applied immediately (no approval wait).
  */
 export async function submitRegularizeRequest(tenantId, profileId, { date, clockInTime, clockOutTime, reason }, tenantSettings = {}) {
+  // An L1 filing for one of their people (l1Service): the DB checks for an
+  // existing request and applies the window + tier as for the employee.
+  if (tenantSettings.asL1) {
+    const { data, error } = await l1RequestRegularize({ profile_id: profileId, date, clockInTime, clockOutTime, reason });
+    if (error || !data) return { data, error: error || new Error('Request was not saved.') };
+    await notifyRegularizeSubmitted(tenantId, profileId, data, date, data.required_approver_role);
+    return { data, error: null, tier: data.required_approver_role };
+  }
+
   // Block resubmission for a date that already has a Pending or Approved
   // request -- once reviewed (or awaiting review) there's nothing left to
   // regularize, and without this an employee could spam the same date over
@@ -644,39 +678,42 @@ export async function submitRegularizeRequest(tenantId, profileId, { date, clock
     await incrementSelfCount(tenantId, profileId);
   }
 
-  if (!error && data?.id) {
-    const requester = await getRequesterLabel(profileId);
-    if (actualTier === 'self') {
-      await notifyProfiles(tenantId, [profileId], {
-        type: 'regularize_auto_approved',
-        title: 'Regularize request auto-approved',
-        body: `Your attendance correction for ${date} was automatically approved.`,
-        linkKey: 'regularize_attendance',
-        relatedId: data.id,
-      });
-      await notifyRoles(tenantId, ['admin'], {
-        type: 'regularize_auto_approved',
-        title: 'Regularize request auto-approved',
-        body: `${requester} submitted an attendance correction for ${date} — auto-approved, no action needed.`,
-        linkKey: 'regularize_attendance',
-        actorId: profileId,
-        relatedId: data.id,
-      }, profileId);
-    } else {
-      // An HOD approves for the people directly under them, like a manager;
-      // for Raniwala the DB trigger keeps only the requester's own line.
-      await notifyRoles(tenantId, withHrRole(actualTier === 'manager' ? ['manager', 'hod'] : [actualTier]), {
-        type: 'regularize_request_submitted',
-        title: 'New regularize request',
-        body: `${requester} submitted a new attendance correction for ${date} — needs your review.`,
-        linkKey: 'regularize_attendance',
-        actorId: profileId,
-        relatedId: data.id,
-      }, profileId);
-    }
-  }
+  if (!error && data?.id) await notifyRegularizeSubmitted(tenantId, profileId, data, date, actualTier);
 
   return { data, error, tier: actualTier };
+}
+
+/** The approver role(s) + HR hear about a new regularize request (the DB trims Raniwala copies to the employee's own line). */
+async function notifyRegularizeSubmitted(tenantId, profileId, data, date, actualTier) {
+  const requester = await getRequesterLabel(profileId);
+  if (actualTier === 'self') {
+    await notifyProfiles(tenantId, [profileId], {
+      type: 'regularize_auto_approved',
+      title: 'Regularize request auto-approved',
+      body: `Your attendance correction for ${date} was automatically approved.`,
+      linkKey: 'regularize_attendance',
+      relatedId: data.id,
+    });
+    await notifyRoles(tenantId, ['admin'], {
+      type: 'regularize_auto_approved',
+      title: 'Regularize request auto-approved',
+      body: `${requester} submitted an attendance correction for ${date} — auto-approved, no action needed.`,
+      linkKey: 'regularize_attendance',
+      actorId: profileId,
+      relatedId: data.id,
+    }, profileId);
+  } else {
+    // An HOD approves for the people directly under them, like a manager;
+    // for Raniwala the DB trigger keeps only the requester's own line.
+    await notifyRoles(tenantId, withHrRole(actualTier === 'manager' ? ['manager', 'hod'] : [actualTier]), {
+      type: 'regularize_request_submitted',
+      title: 'New regularize request',
+      body: `${requester} submitted a new attendance correction for ${date} — needs your review.`,
+      linkKey: 'regularize_attendance',
+      actorId: profileId,
+      relatedId: data.id,
+    }, profileId);
+  }
 }
 
 /**
@@ -692,7 +729,7 @@ export async function listRegularizeRequests(tenantId) {
     .from('regularize_requests')
     .select(`
       *,
-      profile:profile_directory!regularize_requests_profile_id_fkey(first_name, middle_name, last_name, department, designation),
+      profile:profile_directory!regularize_requests_profile_id_fkey(first_name, middle_name, last_name, department, designation, employee_id),
       reviewer:profile_directory!regularize_requests_reviewed_by_fkey(first_name, middle_name, last_name, role)
     `)
     .eq('tenant_id', tenantId)
@@ -747,6 +784,22 @@ export async function approveRegularizeRequest(request, reviewerId, reviewerRole
     relatedId: request.id,
   });
 
+  return { error: null };
+}
+
+/**
+ * HR corrects the times on a still-Pending request before approving it
+ * (e.g. an AM / PM slip). Approving then applies the corrected times.
+ */
+export async function updateRegularizeRequestTimes(requestId, clockInTime, clockOutTime) {
+  const { data, error } = await supabase
+    .from('regularize_requests')
+    .update({ clock_in_time: clockInTime, clock_out_time: clockOutTime })
+    .eq('id', requestId)
+    .eq('status', 'Pending')
+    .select('id');
+  if (error) return { error };
+  if (data?.length === 0) return { error: new Error('This request has already been reviewed.') };
   return { error: null };
 }
 

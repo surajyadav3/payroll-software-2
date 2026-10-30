@@ -891,19 +891,23 @@ tr:hover td {
 .grid-3-1 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 20px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
 
-/* ======================== MODAL ======================== */
+/* ======================== MODAL (right-side slide-over) ======================== */
+/* Every popup opens as a full-height panel on the right edge, like the
+   Messages / Work drawers: header pinned on top, actions pinned at the bottom,
+   only the middle scrolls. */
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(10, 12, 22, 0.4);
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: stretch;
+  justify-content: flex-end;
   z-index: 1000;
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
   opacity: 0;
   visibility: hidden;
-  transition: all 0.3s ease;
+  transition: opacity 0.25s ease, visibility 0.25s ease;
 }
 
 .modal-overlay.show {
@@ -913,60 +917,63 @@ tr:hover td {
 
 .modal {
   background: var(--surface);
-  border-radius: var(--radius-xl);
   width: 560px;
-  max-width: 95vw;
-  max-height: 85vh;
-  overflow-y: auto;
-  box-shadow: var(--shadow-lg);
-  transform: scale(0.95);
-  transition: transform 0.3s ease;
-}
-
-.modal-overlay.show .modal {
-  transform: scale(1);
-}
-
-.modal-fullscreen {
-  width: 96vw;
-  height: 92vh;
-  max-width: 96vw;
-  max-height: 92vh;
+  /* Never slimmer than the Messages / Work drawers, never wider than the screen. */
+  min-width: min(512px, 100vw);
+  max-width: 100vw;
+  height: 100%;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid var(--border-light);
+  box-shadow: -18px 0 48px -12px rgba(10, 12, 22, 0.22);
+  transform: translateX(100%);
+  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
-.modal-fullscreen .modal-body {
-  flex: 1;
-  overflow-y: auto;
+/* `none` (not translateX(0)) once open: a transformed ancestor would re-anchor
+   the position:fixed date / time picker dropdowns to the panel. */
+.modal-overlay.show .modal {
+  transform: none;
+}
+
+/* Wide working panels (company management) — most of the screen, still docked right. */
+.modal-fullscreen {
+  width: min(1180px, 96vw);
 }
 
 .modal-header {
+  flex-shrink: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
   padding: 20px 24px;
   border-bottom: 1px solid var(--border-light);
 }
 
 .modal-header h3 {
+  min-width: 0;
   font-size: 17px;
   font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .modal-close {
-  width: 30px;
-  height: 30px;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  margin: -4px -6px 0 0;
   border-radius: 8px;
   border: none;
-  background: var(--bg);
+  background: transparent;
   cursor: pointer;
-  font-size: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-secondary);
-  transition: all 0.2s;
+  transition: background 0.2s, color 0.2s;
 }
 
 .modal-close:hover {
@@ -975,15 +982,40 @@ tr:hover td {
 }
 
 .modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 20px 24px;
 }
 
+.modal-discard-hint {
+  flex-shrink: 0;
+  padding: 8px 24px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  border-top: 1px solid var(--border-light);
+}
+
 .modal-footer {
+  flex-shrink: 0;
   padding: 14px 24px;
   border-top: 1px solid var(--border-light);
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* The assistant floats bottom-right — exactly where a panel's Save / Cancel
+   sit. It steps aside while any slide-over is open and returns on close. */
+body:has(.modal-overlay.show, [role="dialog"][aria-modal="true"]) .assistant-float {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-overlay, .modal { transition: none; }
 }
 
 /* ======================== FORMS ======================== */
@@ -1168,6 +1200,10 @@ tr:hover td {
   height: 150px;
   background: rgba(108, 92, 231, 0.1);
   border-radius: 50%;
+  /* Decorative only. It sits over the top-right corner, right on top of the
+     Clock Out button, and without this it swallowed clicks on the button's
+     centre, so Clock Out "couldn't be pressed". */
+  pointer-events: none;
 }
 
 .clock-time {
@@ -1921,13 +1957,11 @@ tr:hover td {
   .modal-header { padding: 14px 16px; }
   .modal-footer { padding: 14px 16px; }
 
-  /* Guaranteed breathing room + iPhone safe areas around modals — max-width:95vw
-     alone can leave a modal nearly edge-to-edge on a narrow phone. */
-  .modal-overlay {
-    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
-             max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
-  }
-  .modal, .modal-fullscreen { max-width: calc(100vw - 24px); }
+  /* On a phone the slide-over takes the whole screen; keep its header and
+     actions clear of the iPhone notch / home indicator. */
+  .modal, .modal-fullscreen { width: 100vw !important; min-width: 0; border-left: 0; }
+  .modal-header { padding-top: max(14px, env(safe-area-inset-top)); }
+  .modal-footer { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
 
   table, .table-wrap table { min-width: 480px; } /* scroll within .table-wrap instead of squashing columns unreadably */
 

@@ -83,6 +83,20 @@ test('approved paid leave is paid, unpaid leave is not — with or without an at
   assert.equal(sept({ attByDate: worked(9, { '2026-09-08': 'Leave' }) }).paidDays, 30);
 });
 
+test('came in on a leave day: scored from the punches, paid leave covers the rest', () => {
+  // 20261024_6: 1–4 Sep approved leave, but they punched on each day.
+  const earned = { start_date: '2026-09-01', end_date: '2026-09-03', leave_type: 'Earned Leave' };
+  const unpaid = { start_date: '2026-09-04', end_date: '2026-09-04', leave_type: 'Unpaid Leave' };
+  const r = sept({
+    attByDate: worked(9, { '2026-09-01': 'Present', '2026-09-02': 'Half Day', '2026-09-03': 'Absent', '2026-09-04': 'Half Day' }),
+    leaves: [earned, unpaid],
+    unpaidLeaveTypes: ['Unpaid Leave'],
+  });
+  // Only the unpaid leave's missing half is lost.
+  assert.equal(r.unpaidDays, 0.5);
+  assert.equal(r.paidDays, 29.5);
+});
+
 test('Earned Leave beyond the balance: its last unpaid_days are unpaid', () => {
   // 5 days, 15–19 Sep (Tue–Sat), balance covered 3: 18 and 19 Sep are Loss of Pay.
   const leave = { start_date: '2026-09-15', end_date: '2026-09-19', leave_type: 'Earned Leave', unpaid_days: 2 };
@@ -120,6 +134,17 @@ test('days before joining are unpaid, including weekly offs', () => {
   const r = sept({ emp: emp({ join_date: '2026-09-21' }) });
   assert.equal(r.unpaidDays, 20);
   assert.equal(r.paidDays, 10);
+});
+
+test('days after the offboarding exit date are unpaid, including weekly offs', () => {
+  // Last day Wed 16 Sep: 1–16 Sep is 16 calendar days; the punches after it don't count.
+  const r = sept({ emp: emp({ exit_date: '2026-09-16' }) });
+  assert.deepEqual([r.paidDays, r.unpaidDays, r.daysCounted], [16, 14, 30]);
+  // Split month: all of part 1, nothing of part 2.
+  assert.equal(sept({ emp: emp({ exit_date: '2026-09-16' }), fromDay: 1, toDay: 16 }).paidDays, 16);
+  assert.equal(sept({ emp: emp({ exit_date: '2026-09-16' }), fromDay: 17, toDay: 30 }).paidDays, 0);
+  // Exit on the month's last day: the full month.
+  assert.equal(sept({ emp: emp({ exit_date: '2026-09-30' }) }).paidDays, 30);
 });
 
 test('a running month is paid only up to today', () => {
@@ -285,4 +310,17 @@ test('sandwich: across the month edge only with the next days loaded, and not be
   // a day not yet over is unknown, so Sunday stays paid for now.
   const running = oct({ attByDate: workedOn(10, 0, { '2026-10-24': null, '2026-10-26': null }), today: '2026-10-26' });
   assert.deepEqual(running.sandwichDates, []);
+});
+
+test('Present days count days attended; paidBeforeLate is before the late ladder', () => {
+  const late = { late_deduction_enabled: true, late_deduction_tier2_min: 4, late_deduction_tier2_days: 0.5 };
+  const r = calendarPaidDays({
+    year: 2026, month: 9, emp: emp(), tenant: { ...tenant, ...late }, outlet: office, today: '2026-11-05',
+    attByDate: worked(10, { '2026-10-01': 'Late', '2026-10-02': 'Late', '2026-10-03': 'Late', '2026-10-05': 'Late', '2026-10-06': 'Half Day', '2026-10-07': 'Comp Off', '2026-10-08': null }),
+  });
+  // 27 working days: 1 missing, 1 comp off, 1 half day -> 24.5 present.
+  assert.equal(r.presentDays, 24.5);
+  assert.equal(r.paidBeforeLate, 29.5);
+  assert.equal(r.lateDeduction, 0.5);
+  assert.equal(r.paidDays, 29);
 });

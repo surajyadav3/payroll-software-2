@@ -71,12 +71,12 @@ export default function NotificationBell() {
           className="notification-panel"
           style={{
             position: 'absolute', top: 46, right: 0, width: 340, maxHeight: 440, overflowY: 'auto',
-            background: '#1A1B2E', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 'var(--radius-md)',
+            background: 'var(--popover-bg, #1A1B2E)', border: '1px solid var(--popover-border, rgba(255,255,255,0.1))', borderRadius: 'var(--radius-md)',
             boxShadow: 'var(--shadow-lg)', zIndex: 300, padding: 6,
           }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px' }}>
-            <strong style={{ fontSize: 13, color: '#fff' }}>Notifications</strong>
+            <strong style={{ fontSize: 13, color: 'var(--popover-fg, #fff)' }}>Notifications</strong>
             {unreadCount > 0 && (
               <button
                 onClick={markAllRead}
@@ -88,9 +88,9 @@ export default function NotificationBell() {
           </div>
 
           {loading ? (
-            <div style={{ padding: 20, textAlign: 'center', color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>Loading…</div>
+            <div style={{ padding: 20, textAlign: 'center', color: 'var(--popover-fg-subtle, rgba(255,255,255,0.6))', fontSize: 12 }}>Loading…</div>
           ) : recent.length === 0 ? (
-            <div style={{ padding: 20, textAlign: 'center', color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>You're all caught up.</div>
+            <div style={{ padding: 20, textAlign: 'center', color: 'var(--popover-fg-subtle, rgba(255,255,255,0.6))', fontSize: 12 }}>You're all caught up.</div>
           ) : (
             recent.map((n) => (
               <button
@@ -100,7 +100,7 @@ export default function NotificationBell() {
                   display: 'flex', gap: 8, alignItems: 'flex-start', width: '100%', textAlign: 'left',
                   padding: 10, border: 'none', borderRadius: 8, background: 'transparent', cursor: 'pointer',
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--popover-hover, rgba(255,255,255,0.06))'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
               >
                 <span
@@ -110,15 +110,15 @@ export default function NotificationBell() {
                   }}
                 />
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: n.is_read ? 400 : 700, color: '#fff' }}>{n.title}</div>
-                  {n.body && <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)', marginTop: 2 }}>{n.body}</div>}
-                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 3 }}>{timeAgo(n.created_at)}</div>
+                  <div style={{ fontSize: 13, fontWeight: n.is_read ? 400 : 700, color: 'var(--popover-fg, #fff)' }}>{n.title}</div>
+                  {n.body && <div style={{ fontSize: 12, color: 'var(--popover-fg-muted, rgba(255,255,255,0.65))', marginTop: 2 }}>{n.body}</div>}
+                  <div style={{ fontSize: 11, color: 'var(--popover-fg-subtle, rgba(255,255,255,0.45))', marginTop: 3 }}>{timeAgo(n.created_at)}</div>
                 </div>
               </button>
             ))
           )}
 
-          <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', marginTop: 4, padding: '8px 10px', textAlign: 'center' }}>
+          <div style={{ borderTop: '1px solid var(--popover-border, rgba(255,255,255,0.1))', marginTop: 4, padding: '8px 10px', textAlign: 'center' }}>
             <button
               onClick={() => { setOpen(false); navigate('/notifications'); }}
               style={{ background: 'none', border: 'none', color: 'var(--primary)', fontSize: 12, cursor: 'pointer', fontWeight: 600, padding: 0 }}

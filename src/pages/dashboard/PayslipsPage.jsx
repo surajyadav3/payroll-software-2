@@ -5,7 +5,12 @@ import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
 import { fetchPayslipsByMonth } from '@/services/payrollService';
 import { listActiveEmployees } from '@/services/employeeService';
+import { withSalaries } from '@/services/employeeSalaryService';
+import { fetchLeaveBalancesAsOf } from '@/services/leaveLedgerService';
+import { monthEndDate, parseBreakdown } from '@/lib/raniwalaPayroll';
 import { fmt, monthLabel, escapeHtml, fullName, scopedToOutlet } from '@/lib/helpers';
+import { raniwalaPayslipHtml } from '@/lib/raniwalaPayslipHtml';
+import RaniwalaPayslip from '@/components/payroll/RaniwalaPayslip';
 
 export default function PayslipsPage() {
   const { tenant } = useAuth();
@@ -15,6 +20,7 @@ export default function PayslipsPage() {
   const [payslips, setPayslips] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [filterEmp, setFilterEmp] = useState('');
+  const [leaveMap, setLeaveMap] = useState({});
   const [loading, setLoading] = useState(true);
 
   const fetchPayslips = useCallback(async () => {
@@ -23,10 +29,16 @@ export default function PayslipsPage() {
     try {
       const [slipsRes, empsRes] = await Promise.all([
         fetchPayslipsByMonth(tenant.id, month, year),
-        listActiveEmployees(tenant.id),
+        // Salaries ride along for the CTC on a Raniwala slip (salary-private tenants only).
+        listActiveEmployees(tenant.id).then((res) => withSalaries(tenant, res)),
       ]);
-      setPayslips(scopedToOutlet(slipsRes.data, outletProfileIds));
+      const slips = scopedToOutlet(slipsRes.data, outletProfileIds);
+      setPayslips(slips);
       setEmployees(scopedToOutlet(empsRes.data, outletProfileIds, 'id'));
+      // Raniwala slips show the leave balance on the month's last day.
+      const raniwalaIds = slips.filter((s) => parseBreakdown(s).raniwala).map((s) => s.profile_id);
+      const { data: leave } = await fetchLeaveBalancesAsOf(tenant.id, monthEndDate(year, month), raniwalaIds);
+      setLeaveMap(leave);
     } finally {
       setLoading(false);
     }
@@ -40,6 +52,8 @@ export default function PayslipsPage() {
     setMonth(m); setYear(y);
   };
 
+  const ctcOf = (slip) => employees.find((x) => x.id === slip.profile_id)?.salary_ctc;
+
   let filtered = payslips;
   if (filterEmp) filtered = filtered.filter((p) => p.profile_id === filterEmp);
 
@@ -48,6 +62,15 @@ export default function PayslipsPage() {
     try { breakdown = typeof slip.breakdown === 'string' ? JSON.parse(slip.breakdown) : slip.breakdown; } catch (_e) { /**/ }
 
     const w = window.open('', '', 'width=700,height=600');
+    if (breakdown.raniwala) {
+      // Prints itself once the logos have loaded.
+      w.document.write(raniwalaPayslipHtml({
+        slip, breakdown, ctc: ctcOf(slip), leave: leaveMap[slip.profile_id], companyName: tenant?.company_name, monthText: monthLabel(month, year),
+        assetBase: window.location.origin, autoPrint: true,
+      }));
+      w.document.close();
+      return;
+    }
     w.document.write(`<html><head><title>Payslip</title>
     <style>body{font-family:Inter,sans-serif;padding:20px}*{margin:0;box-sizing:border-box}
     .row{display:flex;justify-content:space-between;padding:4px 0;font-size:13px}
@@ -114,9 +137,32 @@ export default function PayslipsPage() {
             </div>
           </div>
         ) : (
-          filtered.map((slip) => {
+          <>
+          {filtered.some((s) => !s.released_at) && (
+            <div className="card" style={{ marginBottom: 16, borderColor: 'var(--warning)' }}>
+              <div style={{ padding: '12px 20px', fontSize: 13 }}>
+                <i className="fas fa-eye-slash" style={{ color: 'var(--warning)', marginRight: 8 }} />
+                {filtered.filter((s) => !s.released_at).length} payslip(s) here are <strong>held</strong> — employees cannot see them yet.
+                Release them from Run Payroll.
+              </div>
+            </div>
+          )}
+          {filtered.map((slip) => {
             let breakdown = { earnings: [], deductions: [] };
             try { breakdown = typeof slip.breakdown === 'string' ? JSON.parse(slip.breakdown) : slip.breakdown; } catch (_e) { /**/ }
+
+            if (breakdown.raniwala) {
+              return (
+                <div className="card" key={slip.id}>
+                  <div className="card-body">
+                    <RaniwalaPayslip
+                      slip={slip} breakdown={breakdown} ctc={ctcOf(slip)} leave={leaveMap[slip.profile_id]} companyName={tenant?.company_name} monthText={monthLabel(month, year)}
+                      action={<button className="btn btn-outline btn-sm" onClick={() => printPayslip(slip)}><i className="fas fa-print" /> Print</button>}
+                    />
+                  </div>
+                </div>
+              );
+            }
 
             return (
               <div className="card" key={slip.id}>
@@ -174,7 +220,8 @@ export default function PayslipsPage() {
                 </div>
               </div>
             );
-          })
+          })}
+          </>
         )}
       </div>
     </>

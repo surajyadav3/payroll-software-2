@@ -4,6 +4,8 @@
 // a raw href without it being wrong for some of its recipients.
 const LINKS = {
   leave_requests:         { admin: '/leaves',            manager: '/manager-leaves',            employee: '/my-leaves' },
+  // HR: came in on an approved leave day (20261024_6) — the card on Leave Management.
+  leave_worked_days:      { admin: '/leaves' },
   regularize_attendance:  { admin: '/regularize',         manager: '/manager-regularize',         employee: '/my-regularize' },
   wfh_requests:            { admin: '/wfh-requests',       manager: '/manager-wfh-requests',       employee: '/my-wfh' },
   special_requests:        { admin: '/special-requests',   manager: '/manager-special-requests',   employee: '/my-special-requests' },
@@ -20,8 +22,12 @@ const LINKS = {
   // no web route exists for them, so there's deliberately no `employee` entry here.
   verification_requests:   { admin: '/verification-requests', manager: '/manager-verification-requests' },
   // Same page for every role; `param` deep-links to the notification's related_id.
-  tasks:                   { admin: '/tasks', manager: '/tasks', employee: '/tasks', param: 'task' },
+  tasks:                   { admin: '/work', manager: '/work', employee: '/work', param: 'task' },
+  // A mention or a direct message: related_id is the conversation.
+  messages:                { admin: '/work/chat', manager: '/work/chat', employee: '/work/chat', param: 'c' },
   recruitment:             { admin: '/recruitment-pipeline', manager: '/recruitment-pipeline', param: 'candidate' },
+  // A request an L1 filed was decided (20261024_2): related_id is the employee.
+  l1_requests:             { admin: '/l1-employees', manager: '/l1-employees', employee: '/l1-employees', param: 'id' },
 };
 
 export function resolveNotificationLink(linkKey, role, relatedId = null) {

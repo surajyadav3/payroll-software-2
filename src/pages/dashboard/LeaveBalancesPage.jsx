@@ -5,10 +5,10 @@ import StatCard from '@/components/StatCard';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
 import { useOutletView } from '@/context/OutletViewContext';
-import { fetchTenantLeaveBalances, listLeaveTypes, allocateLeave, recordLeaveEncashment, fetchLeaveLedgerHistory } from '@/services/leaveLedgerService';
+import { fetchTenantLeaveBalances, listLeaveTypes, allocateLeave, recordLeaveEncashment, fetchLeaveLedgerHistory, fetchLeavesTaken } from '@/services/leaveLedgerService';
 import { listActiveEmployees } from '@/services/employeeService';
-import { hrAdjustCompOff, fetchCompOffAdjustments } from '@/services/compOffService';
-import { fullName, getInitials, getAvatarColor, scopedToOutlet, dateStr } from '@/lib/helpers';
+import { hrAdjustCompOff, fetchCompOffAdjustments, fetchCompOffEarned, fetchCompOffUsed } from '@/services/compOffService';
+import { fmt, fullName, getInitials, getAvatarColor, scopedToOutlet, isRaniwalaTenant, monthKey, monthLabel, dateStr, fmtDuration } from '@/lib/helpers';
 
 // Why HR is adjusting a balance — stored on the ledger note so the history
 // explains every change. Marriage/Misfortune are no longer separate
@@ -30,6 +30,15 @@ const reasonsFor = (leaveType) => (leaveType.isCompOff ? COMP_OFF_REASONS : ADJU
 
 const fmtDays = (n) => (Number.isInteger(n) ? String(n) : Number(n).toFixed(1).replace(/\.0$/, ''));
 
+// Leaves Taken month picker — this month and the 11 before it.
+const TAKEN_MONTHS = Array.from({ length: 12 }, (_, i) => {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - i);
+  const m = d.getMonth(), y = d.getFullYear();
+  return { key: monthKey(m, y), label: monthLabel(m, y), from: dateStr(new Date(y, m, 1)), to: dateStr(new Date(y, m + 1, 0)) };
+});
+
 export default function LeaveBalancesPage() {
   const { tenant } = useAuth();
   const { outletProfileIds } = useOutletView();
@@ -48,6 +57,12 @@ export default function LeaveBalancesPage() {
   const [encashAmount, setEncashAmount] = useState('');
   const [historyFor, setHistoryFor] = useState(null);
   const [history, setHistory] = useState([]);
+  // Raniwala HR: who took leave, on which dates, for how many days.
+  const showTaken = isRaniwalaTenant(tenant);
+  const [tab, setTab] = useState('balances');
+  const [takenMonth, setTakenMonth] = useState(TAKEN_MONTHS[0].key);
+  const [taken, setTaken] = useState([]);
+  const [takenLoading, setTakenLoading] = useState(false);
 
   const fetchData = useCallback(async () => {
     if (!tenant) return;
@@ -68,6 +83,21 @@ export default function LeaveBalancesPage() {
   }, [tenant, outletProfileIds]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Loaded only once the tab is opened, one month at a time.
+  useEffect(() => {
+    if (!tenant || tab !== 'taken') return;
+    const month = TAKEN_MONTHS.find((m) => m.key === takenMonth);
+    let cancelled = false;
+    setTakenLoading(true);
+    fetchLeavesTaken(tenant.id, month.from, month.to).then(({ data, error }) => {
+      if (cancelled) return;
+      if (error) showToast('Could not load leaves taken: ' + error.message, 'error');
+      setTaken(data);
+      setTakenLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [tenant, tab, takenMonth]);
 
   // Earned Leave only — it's the one balance employees spend (the app's Home
   // and Leaves screens read this same ledger). Marriage/bereavement etc. are
@@ -96,6 +126,18 @@ export default function LeaveBalancesPage() {
       || (e.employee_id || '').toLowerCase().includes(q)
     );
   }, [employees, search]);
+
+  // Joined to the (outlet-scoped, searched) employee list, so both tabs
+  // always cover the same people.
+  const takenRows = useMemo(() => {
+    const empById = new Map(filteredEmployees.map((e) => [e.id, e]));
+    const typeById = new Map(leaveTypes.map((lt) => [lt.id, lt.name]));
+    return taken
+      .filter((r) => empById.has(r.profile_id))
+      .map((r) => ({ ...r, emp: empById.get(r.profile_id), typeName: typeById.get(r.leave_type_id) || 'Leave', taken: Math.abs(Number(r.days)) }));
+  }, [taken, filteredEmployees, leaveTypes]);
+
+  const takenTotal = useMemo(() => takenRows.reduce((s, r) => s + r.taken, 0), [takenRows]);
 
   const negativeBalanceCount = useMemo(
     () => employees.filter((e) => activeTypes.some((lt) => balanceOf(e.id, lt.id) < 0)).length,
@@ -158,11 +200,30 @@ export default function LeaveBalancesPage() {
     setHistoryFor({ emp, leaveType });
     setHistory([]);
     if (leaveType.isCompOff) {
-      const { data, error } = await fetchCompOffAdjustments(emp.id);
+      // Everything that moved the balance: days earned from attendance (the
+      // date worked), Comp Off leave taken, and HR's own changes.
+      const [adj, earned, used] = await Promise.all([
+        fetchCompOffAdjustments(emp.id), fetchCompOffEarned(emp.id), fetchCompOffUsed(emp.id),
+      ]);
+      const error = adj.error || earned.error || used.error;
       if (error) showToast('Could not load comp off history: ' + error.message, 'error');
-      setHistory(data.map((h) => ({
-        id: h.id, effective_date: dateStr(new Date(h.created_at)), entry_type: h.days > 0 ? 'Added by HR' : 'Removed by HR', days: h.days, note: h.note,
-      })));
+      const spanDays = (from, to) => Math.round((new Date(`${to}T00:00:00`) - new Date(`${from}T00:00:00`)) / 86400000) + 1;
+      setHistory([
+        ...earned.data.map((a) => ({
+          id: `e-${a.id}`, effective_date: a.date, tone: 'success', days: Number(a.comp_off_credit),
+          entry_type: a.comp_off_granted ? 'Earned · weekly off / holiday' : 'Earned · extra hours',
+          note: `Worked ${fmtDuration(Number(a.total_hours) || 0)}${a.comp_off_granted ? ' on a weekly off / holiday' : ' (past the shift)'}`,
+        })),
+        ...used.data.map((l) => ({
+          id: `u-${l.id}`, effective_date: l.start_date, tone: 'warning', days: -spanDays(l.start_date, l.end_date),
+          entry_type: 'Used · Comp Off leave',
+          note: `${l.start_date === l.end_date ? l.start_date : `${l.start_date} to ${l.end_date}`}${l.reason ? ` — ${l.reason}` : ''}`,
+        })),
+        ...adj.data.map((h) => ({
+          id: h.id, effective_date: dateStr(new Date(h.created_at)), tone: 'info', days: h.days, note: h.note,
+          entry_type: h.days > 0 ? 'Added by HR' : 'Removed by HR',
+        })),
+      ].sort((a, b) => b.effective_date.localeCompare(a.effective_date)));
       return;
     }
     const { data } = await fetchLeaveLedgerHistory(emp.id, leaveType.id);
@@ -200,8 +261,16 @@ export default function LeaveBalancesPage() {
   return (
     <>
       <Header title="Leave Balances" breadcrumb="People / Leave Balances — current Earned Leave and Comp Off of every employee; changes show on their app" />
-      <div className="page-content">
-        {!loading && employees.length > 0 && (
+      {showTaken && (
+        <div className="tab-bar-wrap">
+          <div className="tabs">
+            <button className={`tab-btn ${tab === 'balances' ? 'active' : ''}`} onClick={() => setTab('balances')}>Balances</button>
+            <button className={`tab-btn ${tab === 'taken' ? 'active' : ''}`} onClick={() => setTab('taken')}>Leaves Taken</button>
+          </div>
+        </div>
+      )}
+      <div className="page-content" style={showTaken ? { paddingTop: 8 } : undefined}>
+        {tab === 'balances' && !loading && employees.length > 0 && (
           <div className="stats-row" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
             <StatCard icon="fa-users" iconColor="blue" value={employees.length} label="Employees" />
             <StatCard icon="fa-umbrella-beach" iconColor="purple" value={fmtDays(totalBalance)} label="Total Days Outstanding" />
@@ -214,6 +283,77 @@ export default function LeaveBalancesPage() {
         ) : leaveTypes.length === 0 ? (
           <div className="card" style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>
             No leave types configured yet — set them up on the Leave Types page first.
+          </div>
+        ) : tab === 'taken' ? (
+          <div className="card">
+            <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+              <select className="form-select" value={takenMonth} onChange={(e) => setTakenMonth(e.target.value)} style={{ maxWidth: 200 }}>
+                {TAKEN_MONTHS.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+              </select>
+              <input
+                className="form-input"
+                placeholder="🔍 Search name, EMP code or department…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                style={{ maxWidth: 320 }}
+              />
+              {!takenLoading && (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  {takenRows.length} leave{takenRows.length === 1 ? '' : 's'} · {fmtDays(takenTotal)} day{takenTotal === 1 ? '' : 's'} deducted
+                </span>
+              )}
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Employee</th><th>Leave Type</th><th>Leave Date</th><th>Days</th><th>Reason</th></tr>
+                </thead>
+                <tbody>
+                  {takenLoading ? (
+                    <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}><div className="spinner" style={{ margin: '0 auto 12px' }} />Loading…</td></tr>
+                  ) : takenRows.length === 0 ? (
+                    <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                      No leave taken in {TAKEN_MONTHS.find((m) => m.key === takenMonth).label}{search.trim() ? ` matching "${search}"` : ''}
+                    </td></tr>
+                  ) : takenRows.map((r) => {
+                    const req = r.leave_request;
+                    return (
+                      <tr key={r.id}>
+                        <td>
+                          <div className="emp-cell">
+                            <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(r.emp.id)})` }}>{getInitials(r.emp.first_name, r.emp.last_name)}</div>
+                            <div>
+                              <div className="emp-name">{fullName(r.emp)}</div>
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                {[r.emp.employee_id, r.emp.department].filter(Boolean).join(' · ')}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td><span className="badge badge-info">{r.typeName}</span></td>
+                        <td style={{ fontSize: 12.5 }}>
+                          {req ? (
+                            <>{fmt.date(req.start_date)}{req.start_date !== req.end_date && <> – {fmt.date(req.end_date)}</>}</>
+                          ) : (
+                            <>
+                              {fmt.date(r.effective_date)}
+                              {r.entry_type !== 'Deduction' && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Recorded by HR on this date</div>}
+                            </>
+                          )}
+                        </td>
+                        <td>
+                          <span style={{ fontWeight: 700 }}>{fmtDays(r.taken)}</span>
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}> day{r.taken === 1 ? '' : 's'}</span>
+                        </td>
+                        <td style={{ maxWidth: 260, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                          {req?.reason || r.note || <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         ) : (
           <div className="card">
@@ -329,7 +469,7 @@ export default function LeaveBalancesPage() {
       >
         {historyFor?.leaveType.isCompOff && (
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
-            Changes made by HR on this page. Comp off earned from attendance or used on an approved Comp Off leave changes the balance directly and is not listed here.
+            Comp off earned on the day it was worked (a weekly off / holiday, or 4h+ past the shift), Comp Off leave taken, and HR's changes on this page. Shows the latest 100 of each.
           </div>
         )}
         <div className="table-wrap">
@@ -341,7 +481,7 @@ export default function LeaveBalancesPage() {
               ) : history.map((h) => (
                 <tr key={h.id}>
                   <td>{h.effective_date}</td>
-                  <td><span className="badge badge-info">{h.entry_type}</span></td>
+                  <td><span className={`badge badge-${h.tone || 'info'}`}>{h.entry_type}</span></td>
                   <td style={{ color: h.days >= 0 ? 'var(--success)' : 'var(--danger)', fontWeight: 600 }}>{h.days > 0 ? '+' : ''}{fmtDays(Number(h.days))}</td>
                   <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{h.note}</td>
                 </tr>

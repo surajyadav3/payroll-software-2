@@ -66,7 +66,7 @@ export default function AssistantWidget() {
   return (
     <>
       {open && (
-        <div style={panel} role="dialog" aria-label="CrewCore Assistant">
+        <div className="assistant-float" style={panel} role="dialog" aria-label="CrewCore Assistant">
           <div style={{ padding: '12px 14px', background: 'var(--primary)', color: '#fff', display: 'flex', alignItems: 'center', gap: 10 }}>
             <i className="fas fa-robot" />
             <div style={{ flex: 1 }}>
@@ -130,7 +130,7 @@ export default function AssistantWidget() {
         </div>
       )}
 
-      <button onClick={() => setOpen((o) => !o)} aria-label={open ? 'Close assistant' : 'Open assistant'} title="CrewCore Assistant"
+      <button className="assistant-float" onClick={() => setOpen((o) => !o)} aria-label={open ? 'Close assistant' : 'Open assistant'} title="CrewCore Assistant"
         style={{
           position: 'fixed', right: 20, bottom: 20, width: 54, height: 54, borderRadius: '50%', border: 0, cursor: 'pointer', zIndex: 1200,
           background: 'var(--primary)', color: '#fff', fontSize: 20, boxShadow: '0 6px 20px rgba(108,92,231,.45)',

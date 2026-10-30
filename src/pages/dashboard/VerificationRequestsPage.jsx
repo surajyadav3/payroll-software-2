@@ -2,13 +2,17 @@ import React, { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import OutletSelect from '@/components/OutletSelect';
 import { showToast } from '@/components/Toast';
+import BulkApproveBar, { BulkHeadCell, BulkRowCell } from '@/components/BulkApproveBar';
+import { useBulkApproval } from '@/hooks/useBulkApproval';
 import { useAuth } from '@/context/AuthContext';
-import { useOutletView } from '@/context/OutletViewContext';
+import { useRequestOutletScope } from '@/context/OutletViewContext';
 import { listAllVerificationRequests, approveVerificationRequest, rejectVerificationRequest } from '@/services/verificationRequestService';
-import { getInitials, getAvatarColor, fullName, scopedToOutlet } from '@/lib/helpers';
+import { getInitials, getAvatarColor, fullName, scopedToOutlet, isRaniwalaTenant, fmt } from '@/lib/helpers';
+import { exportRequestSheet, fmtExportDateTime } from '@/lib/requestExport';
 
-const FIELD_GROUP_LABEL = { bank: 'Bank Details', pan: 'PAN', aadhar: 'Aadhar' };
-const FIELD_LABEL = { bank_acc: 'Account No.', bank_name: 'Bank Name', ifsc_code: 'IFSC', pan: 'PAN', aadhar: 'Aadhar' };
+const FIELD_GROUP_LABEL = { bank: 'Bank Details', pan: 'PAN', aadhar: 'Aadhar', dob: 'Date of Birth' };
+const FIELD_LABEL = { bank_acc: 'Account No.', bank_name: 'Bank Name', ifsc_code: 'IFSC', pan: 'PAN', aadhar: 'Aadhar', date_of_birth: 'DOB' };
+const showValue = (f, v) => (v && f === 'date_of_birth' ? fmt.date(v) : v);
 
 function fmtDateTime(iso) {
   if (!iso) return '—';
@@ -31,12 +35,12 @@ function ValueDiff({ request }) {
           <div key={f} style={{ fontSize: 12 }}>
             <span style={{ color: 'var(--text-muted)' }}>{FIELD_LABEL[f] || f}: </span>
             <span style={{ textDecoration: changed && oldV ? 'line-through' : 'none', color: 'var(--text-muted)' }}>
-              {oldV || '—'}
+              {showValue(f, oldV) || '—'}
             </span>
             {changed && (
               <>
                 <span style={{ margin: '0 4px' }}>→</span>
-                <strong style={{ color: 'var(--success)' }}>{newV || '—'}</strong>
+                <strong style={{ color: 'var(--success)' }}>{showValue(f, newV) || '—'}</strong>
               </>
             )}
           </div>
@@ -48,15 +52,18 @@ function ValueDiff({ request }) {
 
 export default function VerificationRequestsPage() {
   const { profile, tenant } = useAuth();
-  const { outletProfileIds } = useOutletView();
+  const outletProfileIds = useRequestOutletScope();
 
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState('Pending');
+  // Raniwala employees verify their own details (20261024_3) — this page is
+  // HR's record of what they filled, so it opens on everything.
+  const selfVerify = isRaniwalaTenant(tenant);
+  const [statusFilter, setStatusFilter] = useState(selfVerify ? 'All' : 'Pending');
   const [acting, setActing] = useState(null);
 
   const fetchRequests = useCallback(async () => {
-    if (!tenant) return;
+    if (!tenant || outletProfileIds === undefined) return;
     setLoading(true);
     try {
       const { data, error } = await listAllVerificationRequests(tenant.id);
@@ -100,17 +107,54 @@ export default function VerificationRequestsPage() {
   const filtered = statusFilter === 'All' ? requests : requests.filter((r) => r.status === statusFilter);
   const pendingCount = requests.filter((r) => r.status === 'Pending').length;
 
-  const reviewerLabel = (reviewer) => {
+  const bulk = useBulkApproval({
+    rows: filtered,
+    loading,
+    canAct: (req) => req.status === 'Pending',
+    noun: 'verification request',
+    onDone: fetchRequests,
+    decide: (req, approve) => (approve ? approveVerificationRequest : rejectVerificationRequest)(req, profile.id),
+    confirmNote: (rows, approve) => (approve
+      ? 'Approving marks these bank / PAN / Aadhar details as verified. Make sure each Old → New change has been checked.'
+      : ''),
+  });
+
+  const reviewerLabel = (reviewer, req) => {
+    if (req.reviewed_by && req.reviewed_by === req.profile_id) return { name: 'Self-verified', role: 'By the employee' };
     if (!reviewer) return null;
     const name = fullName(reviewer);
     const role = reviewer.role === 'admin' ? 'Admin' : reviewer.role === 'manager' ? 'Manager' : reviewer.role;
     return { name, role };
   };
 
+  const exportList = () => {
+    const values = (req, side) => Object.keys(req.new_value || {})
+      .map((f) => `${FIELD_LABEL[f] || f}: ${showValue(f, req[side]?.[f]) || '—'}`).join('; ');
+    exportRequestSheet(filtered.map((req) => {
+      const rev = reviewerLabel(req.reviewer, req);
+      return {
+        'Emp Code': req.profile?.employee_id || '',
+        Employee: fullName(req.profile),
+        Department: req.profile?.department || '',
+        Field: FIELD_GROUP_LABEL[req.field_group] || req.field_group,
+        Old: values(req, 'old_value'),
+        New: values(req, 'new_value'),
+        Status: req.status,
+        'Submitted On': fmtExportDateTime(req.created_at),
+        'Reviewed By': rev ? `${rev.name} (${rev.role})` : '',
+        'Reviewed On': fmtExportDateTime(req.reviewed_at),
+      };
+    }), {
+      sheet: `${statusFilter} Verification`,
+      file: `${statusFilter} verification requests`,
+      widths: [10, 24, 18, 14, 40, 40, 10, 22, 28, 22],
+    });
+  };
+
   return (
     <>
       <Header
-        title="Verification Requests"
+        title={selfVerify ? 'Verified Details' : 'Verification Requests'}
         breadcrumb={pendingCount > 0 ? `${pendingCount} pending` : 'All caught up'}
       />
       <div className="page-content">
@@ -133,13 +177,23 @@ export default function VerificationRequestsPage() {
               )}
             </button>
           ))}
+          <button
+            className="btn btn-sm btn-outline"
+            style={{ marginLeft: 'auto' }}
+            onClick={exportList}
+            disabled={loading || filtered.length === 0}
+          >
+            <i className="fas fa-file-excel" style={{ marginRight: 6 }} />Export
+          </button>
         </div>
 
         <div className="card">
+          <BulkApproveBar bulk={bulk} />
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
+                  <BulkHeadCell bulk={bulk} />
                   <th>Employee</th>
                   <th>Field</th>
                   <th>Submitted On</th>
@@ -164,9 +218,10 @@ export default function VerificationRequestsPage() {
                     </td>
                   </tr>
                 ) : filtered.map((req) => {
-                  const rev = reviewerLabel(req.reviewer);
+                  const rev = reviewerLabel(req.reviewer, req);
                   return (
                     <tr key={req.id}>
+                      <BulkRowCell bulk={bulk} row={req} />
                       <td>
                         <div className="emp-cell">
                           <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(req.profile_id)})` }}>
@@ -220,7 +275,7 @@ export default function VerificationRequestsPage() {
                             <button
                               className="btn btn-sm btn-success"
                               title="Approve"
-                              disabled={acting === req.id}
+                              disabled={acting === req.id || bulk.busy}
                               onClick={() => handleApprove(req)}
                             >
                               {acting === req.id
@@ -230,7 +285,7 @@ export default function VerificationRequestsPage() {
                             <button
                               className="btn btn-sm btn-danger"
                               title="Reject"
-                              disabled={acting === req.id}
+                              disabled={acting === req.id || bulk.busy}
                               onClick={() => handleReject(req)}
                             >
                               <i className="fas fa-times" />

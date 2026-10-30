@@ -31,7 +31,8 @@ export async function syncFeatureRegistry() {
   // is_premium: false explicitly so entries that don't set it (everything
   // except premium features like 'live_tracking') don't send a bare null
   // into the NOT NULL is_premium column.
-  const rows = FEATURE_REGISTRY.map((f) => ({ is_premium: false, ...f }));
+  // `since` is code-only metadata (no DB column) — strip it.
+  const rows = FEATURE_REGISTRY.map(({ since: _since, ...f }) => ({ is_premium: false, ...f }));
   const { error } = await supabase.from('features').upsert(rows, { onConflict: 'key' });
   if (error) console.error('syncFeatureRegistry failed:', error.message);
   return { error };

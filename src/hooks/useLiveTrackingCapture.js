@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useFeatures } from '@/context/FeatureContext';
 import { getMyTrackingToggle, insertPing } from '@/services/trackingService';
-import { todayStr } from '@/lib/helpers';
+import { todayStr, distanceMeters } from '@/lib/helpers';
 
 // Roughly one ping per interval — throttled inside the watchPosition
 // callback rather than polling, so it still benefits from the OS/browser's
@@ -13,8 +13,18 @@ const PING_INTERVAL_MS = 45000;
 // already clocked in and had the app open before the admin flipped their
 // toggle would never start capturing — the toggle was only ever read once,
 // on mount, so a same-session admin action was invisible until the
-// employee happened to reload the page.
-const TOGGLE_POLL_MS = 60000;
+// employee happened to reload the page. Read once on load (trackingOn also
+// decides the geofence bypass at clock-in), then re-read only while clocked
+// in and the tab is visible, every 5 min — the feature is tenant-wide, so
+// every Raniwala user with a dashboard open runs this.
+const TOGGLE_POLL_MS = 5 * 60 * 1000;
+
+// A new fix is only written once the employee has moved this far, or as a
+// heartbeat after HEARTBEAT_MS standing still — same rule as the CrewCore
+// app (lib/liveTrackingTask.ts), so a desk-bound tab doesn't write a row
+// every 45 s.
+const MIN_MOVE_M = 30;
+const HEARTBEAT_MS = 5 * 60 * 1000;
 
 /**
  * Records this employee's location while Live Tracking is on for them
@@ -33,6 +43,7 @@ export function useLiveTrackingCapture({ profile, tenant, isClockedIn }) {
   const [trackingOn, setTrackingOn] = useState(false);
   const watchRef = useRef(null);
   const lastPingAtRef = useRef(0);
+  const lastFixRef = useRef(null);
 
   const featureOn = isEnabled('live_tracking');
 
@@ -50,9 +61,22 @@ export function useLiveTrackingCapture({ profile, tenant, isClockedIn }) {
       });
     };
     checkToggle();
-    const intervalId = setInterval(checkToggle, TOGGLE_POLL_MS);
-    return () => { cancelled = true; clearInterval(intervalId); };
+    return () => { cancelled = true; };
   }, [profile?.id, featureOn]);
+
+  useEffect(() => {
+    if (!profile?.id || !featureOn || !isClockedIn) return;
+    let cancelled = false;
+    const recheck = () => {
+      if (document.visibilityState !== 'visible') return;
+      getMyTrackingToggle(profile.id).then(({ data, error }) => {
+        if (cancelled || error) return;
+        setTrackingOn(!!data);
+      });
+    };
+    const intervalId = setInterval(recheck, TOGGLE_POLL_MS);
+    return () => { cancelled = true; clearInterval(intervalId); };
+  }, [profile?.id, featureOn, isClockedIn]);
 
   useEffect(() => {
     if (!trackingOn || !isClockedIn || !profile?.id || !tenant?.id || !navigator.geolocation) return;
@@ -61,7 +85,12 @@ export function useLiveTrackingCapture({ profile, tenant, isClockedIn }) {
       (pos) => {
         const now = Date.now();
         if (now - lastPingAtRef.current < PING_INTERVAL_MS) return;
+        const { latitude, longitude } = pos.coords;
+        const last = lastFixRef.current;
+        if (last && now - lastPingAtRef.current < HEARTBEAT_MS
+            && distanceMeters(last.lat, last.lng, latitude, longitude) < MIN_MOVE_M) return;
         lastPingAtRef.current = now;
+        lastFixRef.current = { lat: latitude, lng: longitude };
         insertPing(
           tenant.id, profile.id, profile.outlet_id,
           pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy,

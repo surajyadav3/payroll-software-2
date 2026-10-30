@@ -3,10 +3,10 @@ import { supabase } from '@/lib/supabase';
 // Employee salary (monthly gross, CTC, actual gross, and the Gross Advance =
 // gross - actual gross, a generated column from 20261019_2) lives in
 // employee_salaries, not on the profile, for a tenant with
-// tenants.salary_private (Raniwala) — migration 20261014_4. RLS lets payroll
-// HR read the tenant's rows and an employee read only their own; a manager,
-// HOD or the HR Support login gets nothing back. Every change is kept in
-// employee_salary_history (HR only).
+// tenants.salary_private (Raniwala) — migration 20261014_4. RLS lets HR
+// (incl. the HR Support login, 20261021_8) read the tenant's rows and an
+// employee read only their own; a manager or HOD gets nothing back. Every
+// change is kept in employee_salary_history (payroll HR only).
 
 const SALARY_COLS = 'profile_id, gross, ctc, actual_gross, gross_advance, updated_at';
 
@@ -50,7 +50,7 @@ export async function withSalaries(tenant, res) {
 
 /**
  * Set an employee's salary. `null`/`undefined` keeps what is there; 0 clears
- * CTC / actual gross. Only payroll HR may call this (checked in the DB).
+ * CTC / actual gross. Only HR may call this (checked in the DB).
  */
 export async function setEmployeeSalary({ profileId, gross, ctc, actualGross, effectiveFrom = null, source = 'manual', note = null }) {
   const n = (v) => (v === undefined || v === null || v === '' ? null : Number(v));

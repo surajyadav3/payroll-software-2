@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import Header from '@/components/Header';
 import { showToast } from '@/components/Toast';
 import { useAuth } from '@/context/AuthContext';
-import { fetchMyProcess, updateTaskStatus } from '@/services/offboardingService';
+import { fetchMyProcess, updateTaskStatus, exitCountdown } from '@/services/offboardingService';
 import { fmt } from '@/lib/helpers';
 
 const STATUS_BADGE = { 'In Progress': 'badge-info', Completed: 'badge-success', Cancelled: 'badge-danger' };
@@ -44,7 +44,7 @@ export function MyOffboardingContent() {
           <div className="card">
             <div className="card-header">
               <h3>Offboarding <span className={`badge ${STATUS_BADGE[process.status]}`} style={{ marginLeft: 8 }}>{process.status}</span></h3>
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Exit date {fmt.date(process.exit_date)}{process.last_working_day ? ` · Last working day ${fmt.date(process.last_working_day)}` : ''}</span>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{process.applied_on ? `Applied on ${fmt.date(process.applied_on)} · ` : ''}Exit date {fmt.date(process.exit_date)}{exitCountdown(process) ? ` · ${exitCountdown(process)}` : ''}</span>
             </div>
             <div className="table-wrap">
               <table>

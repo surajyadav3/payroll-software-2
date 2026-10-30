@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { activeProfileIdsByMobile, normalizeIndianMobile } from "../_shared/indianMobile.ts";
 
 // SMS OTP via MSG91 (pending-list item 1). Login / password recovery only:
 // the number must belong to exactly one active CrewCore account.
@@ -17,14 +18,6 @@ const corsHeaders = {
 };
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-
-/** 10-digit Indian mobile (starts 6-9) from any common format, else null. */
-export function normalizeIndianMobile(raw: string): string | null {
-  let d = String(raw || "").replace(/\D/g, "");
-  if (d.length === 12 && d.startsWith("91")) d = d.slice(2);
-  else if (d.length === 11 && d.startsWith("0")) d = d.slice(1);
-  return /^[6-9]\d{9}$/.test(d) ? d : null;
-}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -45,11 +38,8 @@ serve(async (req) => {
     });
 
     // Registered, active accounts only (stops SMS-pumping to random numbers).
-    const variants = [mobile, `+91${mobile}`, `91${mobile}`, `0${mobile}`, `+91 ${mobile}`];
-    const { data: matches, error: profErr } = await db.from("profiles")
-      .select("id").in("phone", variants).eq("status", "Active").limit(3);
-    if (profErr) throw profErr;
-    if (!matches || matches.length === 0) {
+    const matches = await activeProfileIdsByMobile(db, mobile);
+    if (matches.length === 0) {
       return json({ error: "No active account uses this mobile number. Contact your HR." }, 404);
     }
     if (matches.length > 1) {

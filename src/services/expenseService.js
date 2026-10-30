@@ -30,7 +30,7 @@ export async function listMyExpenseClaims(profileId) {
 export async function listTenantExpenseClaims(tenantId) {
   const { data, error } = await supabase
     .from('expense_claims')
-    .select('*, items:expense_claim_items(*), profile:profile_directory!expense_claims_profile_id_fkey(first_name, middle_name, last_name)')
+    .select('*, items:expense_claim_items(*), profile:profile_directory!expense_claims_profile_id_fkey(first_name, middle_name, last_name, employee_id, department)')
     .eq('tenant_id', tenantId)
     .order('created_at', { ascending: false });
   return { data: data || [], error };

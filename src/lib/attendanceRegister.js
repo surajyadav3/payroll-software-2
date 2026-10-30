@@ -1,7 +1,7 @@
 // Day rows behind Master Report's date-range sheets (Attendance Log,
 // Absentees). Pure — no Supabase, no React — so the rules are unit
 // tested (tests/unit/attendance-register.test.mjs).
-import { dateStr, getTenantWeeklyOffDays } from './helpers.js';
+import { dateStr, getTenantWeeklyOffDays, comparePunches } from './helpers.js';
 import { RANIWALA_SHEET_SETTLED_MONTHS } from './paidDays.js';
 
 // Absent/Leave days are worked out per calendar day, so a mistyped year in
@@ -27,13 +27,14 @@ function isHolidayFor(emp, outlet, holidaysByDate, date) {
 /**
  * What kind of day `date` is for this employee: 'Weekly off' (their own
  * outlet's weekly off, else the company's — Raniwala's Delhi outlet is off
- * Monday, so a Delhi Sunday is a 'Working day'), 'Holiday', or 'Working day'.
+ * Monday, so a Delhi Sunday is a 'Working day'; at Gurgaon each employee's
+ * own Weekly Holiday), 'Holiday', or 'Working day'.
  * Same order as trg_comp_off_credit_from_hours, which credits comp off for
  * an off day worked and only for time past the shift on a working day.
  */
 export function dayTypeFor({ emp, outlet, tenant, holidays = [], date }) {
   const weekday = new Date(`${date}T00:00:00`).getDay();
-  if (getTenantWeeklyOffDays(tenant, outlet).includes(weekday)) return 'Weekly off';
+  if (getTenantWeeklyOffDays(tenant, outlet, emp).includes(weekday)) return 'Weekly off';
   if (isHolidayFor(emp, outlet, { [date]: holidays.filter((h) => h.date === date) }, date)) return 'Holiday';
   return 'Working day';
 }
@@ -103,7 +104,7 @@ export function buildDayRows({
       return { date, rec: am[date], status, leave };
     });
     const outlet = outletById[emp.outlet_id];
-    const offDays = getTenantWeeklyOffDays(tenant, outlet);
+    const offDays = getTenantWeeklyOffDays(tenant, outlet, emp);
     days.forEach(({ date, weekday }) => {
       if (am[date]) return;
       if (emp.join_date && date < emp.join_date) return;
@@ -132,7 +133,7 @@ export const REGISTER_CODES = {
 const NOT_PRESENT_CODES = new Set(['L', 'A', 'CO', 'WO', 'HOL']);
 
 const firstPunch = (punches, type, pickLast) => {
-  const times = (punches || []).filter((p) => p.punch_type === type).map((p) => p.punch_time).sort();
+  const times = (punches || []).filter((p) => p.punch_type === type).sort(comparePunches).map((p) => p.punch_time);
   return (pickLast ? times[times.length - 1] : times[0]) || null;
 };
 
@@ -170,7 +171,7 @@ export function buildRegister({ entries, tenant, outlets = [], fromDate, toDate,
   const rows = entries.map(({ emp, rows: dayRows }) => {
     const byDate = Object.fromEntries(dayRows.map((r) => [r.date, r]));
     const outlet = outletById[emp.outlet_id];
-    const offDays = getTenantWeeklyOffDays(tenant, outlet);
+    const offDays = getTenantWeeklyOffDays(tenant, outlet, emp);
     const counts = {};
     let workingDays = 0;
     const cells = dates.map(({ date, weekday }) => {
@@ -194,6 +195,33 @@ export function buildRegister({ entries, tenant, outlets = [], fromDate, toDate,
     return { emp, workingDays, presentDays, counts, cells };
   });
   return { dates, rows };
+}
+
+/**
+ * Raniwala's Attendance Register is downloaded as two files: Factory and
+ * Office. With the Factory outlet selected it lists that outlet's employees
+ * only; with the Office outlet selected it lists everyone NOT in a factory —
+ * Office Staff plus Delhi, Gurugram, B2B SALES and any other outlet (and
+ * employees with no outlet yet), so the two files together cover everyone
+ * once.
+ *
+ * Returns `{ employees, outletNames }` (outletNames = the outlets folded into
+ * the Office file, for its header), or null when the selection is neither a
+ * factory nor an office — the register then follows the usual outlet scope.
+ */
+export function registerOutletScope({ employees, outlets = [], selectedOutletId }) {
+  const selected = outlets.find((o) => o.id === selectedOutletId);
+  if (!selected) return null;
+  const isFactory = (o) => /factory/i.test(o?.name || '');
+  if (isFactory(selected)) {
+    return { employees: employees.filter((e) => e.outlet_id === selected.id), outletNames: [selected.name] };
+  }
+  if (!/office/i.test(selected.name || '')) return null;
+  const factoryIds = new Set(outlets.filter(isFactory).map((o) => o.id));
+  return {
+    employees: employees.filter((e) => !factoryIds.has(e.outlet_id)),
+    outletNames: [selected, ...outlets.filter((o) => o !== selected && !factoryIds.has(o.id))].map((o) => o.name),
+  };
 }
 
 // Sandwich rule (20261020_1), as Run Payroll counts it (lib/paidDays): a

@@ -7,6 +7,7 @@ import {
   listFeatures, listCompanyFeatureToggles, resolveFeatureState, setFeatureToggle, clearFeatureOverride,
   syncFeatureRegistry,
 } from '@/services/featureService';
+import { isNewFeature } from '@/lib/featureRegistry';
 
 // Keka-style default: 3 self-approvals/month, matches the prior hardcoded
 // requestQuotaService.SELF_LIMIT — shown here only as the input's placeholder
@@ -232,6 +233,8 @@ export default function ToggleServicesPage() {
   const [toggles, setToggles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState(null);
+  const [search, setSearch] = useState('');
+  const [newOnly, setNewOnly] = useState(false);
 
   const refreshTenants = useCallback(() => {
     listAllTenants().then(({ data }) => setTenants(data || []));
@@ -269,16 +272,21 @@ export default function ToggleServicesPage() {
 
   const currentOutletId = scopeOutletId || null;
 
+  const newCount = useMemo(() => features.filter((f) => isNewFeature(f.key)).length, [features]);
+
   // Grouped in the order listFeatures() already returns (sort_order) —
   // categories fall out in that same order as a side effect of Map insertion.
   const grouped = useMemo(() => {
+    const q = search.trim().toLowerCase();
     const byCategory = new Map();
     for (const f of features) {
+      if (newOnly && !isNewFeature(f.key)) continue;
+      if (q && !`${f.name} ${f.description || ''} ${f.category}`.toLowerCase().includes(q)) continue;
       if (!byCategory.has(f.category)) byCategory.set(f.category, []);
       byCategory.get(f.category).push(f);
     }
     return Array.from(byCategory.entries());
-  }, [features]);
+  }, [features, search, newOnly]);
 
   const handleToggle = async (f) => {
     const effective = resolveFeatureState(toggles, f.key, currentOutletId, !f.is_premium);
@@ -317,6 +325,27 @@ export default function ToggleServicesPage() {
               </select>
             </div>
           )}
+          <div className="form-group" style={{ minWidth: 220, flex: 1 }}>
+            <label className="form-label">Find a feature</label>
+            <input
+              className="form-input"
+              type="search"
+              placeholder="e.g. task, careers, AI…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          {newCount > 0 && (
+            <div className="form-group" style={{ alignSelf: 'flex-end' }}>
+              <button
+                className={`btn btn-sm ${newOnly ? 'btn-primary' : 'btn-outline'}`}
+                onClick={() => setNewOnly((v) => !v)}
+                title="Features added in the last two months"
+              >
+                <i className="fas fa-wand-magic-sparkles" /> New features ({newCount})
+              </button>
+            </div>
+          )}
         </div>
 
         {loading ? (
@@ -325,7 +354,8 @@ export default function ToggleServicesPage() {
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>No companies registered yet.</div>
         ) : (
           <>
-          {!scopeOutletId && (
+          {/* Company settings cards step aside while searching, so matches show first. */}
+          {!scopeOutletId && !search.trim() && !newOnly && (
             <>
               <AutoApprovalCard
                 tenant={currentTenant}
@@ -356,6 +386,11 @@ export default function ToggleServicesPage() {
               <CompOffGainTypeCard tenant={currentTenant} onSaved={refreshTenants} />
             </>
           )}
+          {grouped.length === 0 && (
+            <div className="card" style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)' }}>
+              No features match{search ? ` "${search}"` : ''}.
+            </div>
+          )}
           {grouped.map(([category, items]) => (
             <div className="card" key={category} style={{ marginBottom: 16 }}>
               <div className="card-header"><h3>{category}</h3></div>
@@ -370,6 +405,9 @@ export default function ToggleServicesPage() {
                         <tr key={f.key}>
                           <td>
                             <strong>{f.name}</strong>
+                            {isNewFeature(f.key) && (
+                              <span className="badge badge-info" style={{ marginLeft: 8, fontSize: 10 }}>New</span>
+                            )}
                             {f.is_premium && (
                               <span className="premium-badge" style={{ marginLeft: 8 }}>
                                 <i className="fas fa-crown" /> Premium

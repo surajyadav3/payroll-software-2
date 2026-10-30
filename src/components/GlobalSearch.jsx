@@ -6,7 +6,7 @@ import { useOutletView } from '@/context/OutletViewContext';
 import { useDebounce } from '@/hooks/useDebounce';
 import { getActionsForRole } from '@/lib/searchActions';
 import { listActiveEmployees } from '@/services/employeeService';
-import { fullName, getInitials, getAvatarColor } from '@/lib/helpers';
+import { fullName, getInitials, getAvatarColor, isHrSupport } from '@/lib/helpers';
 
 // Only roles with an actual employee-directory route get the "Employees"
 // result group — an individual employee has no one to look up this way.
@@ -38,7 +38,8 @@ export default function GlobalSearch() {
     return () => document.removeEventListener('mousedown', onClick);
   }, [open]);
 
-  const actions = useMemo(() => getActionsForRole(role, isEnabled), [role, isEnabled]);
+  const hrSupport = isHrSupport(profile);
+  const actions = useMemo(() => getActionsForRole(role, isEnabled, { hrSupport }), [role, isEnabled, hrSupport]);
 
   const q = debouncedQuery.trim().toLowerCase();
 
@@ -101,11 +102,11 @@ export default function GlobalSearch() {
       {open && (
         <div style={{
           position: 'absolute', top: 42, left: 0, width: 'min(320px, calc(100vw - 32px))', maxHeight: '60vh', overflowY: 'auto',
-          background: '#1A1B2E', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 'var(--radius-md)',
+          background: 'var(--popover-bg, #1A1B2E)', border: '1px solid var(--popover-border, rgba(255,255,255,0.1))', borderRadius: 'var(--radius-md)',
           boxShadow: 'var(--shadow-lg)', zIndex: 300, padding: 6,
         }}>
           {!hasResults ? (
-            <div style={{ padding: 20, textAlign: 'center', color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>
+            <div style={{ padding: 20, textAlign: 'center', color: 'var(--popover-fg-subtle, rgba(255,255,255,0.6))', fontSize: 12 }}>
               {q ? `No matches for "${debouncedQuery}"` : 'Start typing to search…'}
             </div>
           ) : (
@@ -124,8 +125,8 @@ export default function GlobalSearch() {
                         {getInitials(e.first_name, e.last_name)}
                       </span>
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>{fullName(e)}</div>
-                        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>{[e.employee_id, e.department || 'No department'].filter(Boolean).join(' · ')}</div>
+                        <div style={{ fontSize: 13, color: 'var(--popover-fg, #fff)', fontWeight: 600 }}>{fullName(e)}</div>
+                        <div style={{ fontSize: 11, color: 'var(--popover-fg-subtle, rgba(255,255,255,0.5))' }}>{[e.employee_id, e.department || 'No department'].filter(Boolean).join(' · ')}</div>
                       </div>
                     </button>
                   ))}
@@ -141,7 +142,7 @@ export default function GlobalSearch() {
                       <span style={{ width: 26, textAlign: 'center', color: 'var(--primary)', flexShrink: 0 }}>
                         <i className={`fas ${a.icon}`} />
                       </span>
-                      <div style={{ fontSize: 13, color: '#fff', fontWeight: 500 }}>{a.label}</div>
+                      <div style={{ fontSize: 13, color: 'var(--popover-fg, #fff)', fontWeight: 500 }}>{a.label}</div>
                     </button>
                   ))}
                 </>
@@ -154,5 +155,5 @@ export default function GlobalSearch() {
   );
 }
 
-const hoverIn = (e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; };
+const hoverIn = (e) => { e.currentTarget.style.background = 'var(--popover-hover, rgba(255,255,255,0.06))'; };
 const hoverOut = (e) => { e.currentTarget.style.background = 'transparent'; };

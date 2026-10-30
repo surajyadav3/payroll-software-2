@@ -1,5 +1,5 @@
-// Smoke E2E for the 2026-10 pending-list features: Tasks, Help, notification
-// channels, PMS workspace, recruitment pipeline + careers settings.
+// Smoke E2E for the 2026-10 features: Work (tasks), Help, notification
+// channels, Performance, recruitment pipeline + careers settings.
 // Needs an HR/admin login of a test tenant:
 //   E2E_ADMIN_EMAIL / E2E_ADMIN_PASSWORD  (never commit credentials)
 // Creates one "[E2E]" task assigned to the signed-in user and deletes it again.
@@ -28,41 +28,28 @@ test.describe('New features smoke', () => {
     expect(pageErrors, `uncaught page errors:\n${pageErrors.join('\n')}`).toEqual([]);
   });
 
-  test('tasks: create, complete, comment, delete', async ({ page }) => {
+  test('work: add a task, comment on it, delete it', async ({ page }) => {
     const title = `[E2E] smoke task ${Date.now()}`;
+    // The old /tasks address still works: it lands on My Work.
     await page.goto('/tasks');
-    await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible();
+    await expect(page).toHaveURL(/\/work\/me/);
+    await page.goto('/work');
+    await expect(page.getByRole('heading', { name: /^Tasks/ })).toBeVisible({ timeout: 15000 });
 
-    await page.getByRole('button', { name: /new task/i }).click();
-    await page.getByPlaceholder('What needs to be done?').fill(title);
-    await page.getByRole('button', { name: 'Create Task' }).click();
-    await expect(page.getByText('Task created')).toBeVisible();
+    await page.getByRole('button', { name: 'New task' }).click();
+    await page.getByPlaceholder('What needs doing?').fill(title);
+    await page.getByRole('button', { name: 'Add task' }).click();
+    await expect(page.getByText(/ added\.$/)).toBeVisible();
 
-    const row = page.locator('tr', { hasText: title });
-    await expect(row).toBeVisible();
-    // Register rules: Done without a due date asks for one (and a note in case it goes to review).
-    await row.locator('select').selectOption('Done');
-    await expect(page.getByRole('heading', { name: 'Mark as Done' })).toBeVisible();
-    await page.locator('.modal-overlay.show input[type="date"]').last().fill(new Date().toISOString().slice(0, 10));
-    await page.locator('.modal-overlay.show textarea').last().fill('E2E done, no document');
-    await page.getByRole('button', { name: 'Confirm' }).click();
-
-    // Done tasks leave the default "Open tasks" filter — switch to all statuses.
-    await page.locator('select').filter({ hasText: 'Open tasks' }).selectOption('');
-    await page.locator('tr', { hasText: title }).click();
-    await page.getByRole('button', { name: 'Activity' }).click();
-    await expect(page.getByText(/moved it from/)).toBeVisible();
-    await page.getByRole('button', { name: /^Comments/ }).click();
-    await page.getByPlaceholder(/add a comment/i).fill('E2E comment');
-    await page.getByRole('button', { name: 'Post' }).click();
+    // A new task opens in its drawer.
+    await expect(page.getByRole('dialog').getByText(title).first()).toBeVisible();
+    await page.getByPlaceholder('Comment — @ to mention someone').fill('E2E comment');
+    await page.keyboard.press('Enter');
     await expect(page.getByText('E2E comment')).toBeVisible();
 
-    await page.getByRole('button', { name: /delete/i }).click();
-    await expect(page.getByText('Task deleted')).toBeVisible();
-    await expect(page.locator('tr', { hasText: title })).toHaveCount(0);
-
-    await page.getByTitle('Board view').click();
-    await expect(page.getByText('In review').first()).toBeVisible();
+    await page.getByRole('button', { name: 'Delete task' }).click();
+    await expect(page.getByText(/ deleted$/)).toBeVisible();
+    await expect(page.getByText(/something went wrong/i)).toHaveCount(0);
   });
 
   test('help: search and open an answer', async ({ page }) => {
@@ -79,10 +66,11 @@ test.describe('New features smoke', () => {
     await expect(page.getByText('Daily reminders (9:00 AM)')).toBeVisible();
   });
 
-  test('performance workspace loads', async ({ page }) => {
+  test('performance loads', async ({ page }) => {
     await page.goto('/performance');
-    await expect(page.getByText('Performance workspace')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('Scorecards').first()).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Performance', exact: true })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('tab', { name: 'Review cycles' })).toBeVisible();
+    await page.getByRole('tab', { name: 'KPIs' }).click();
     await expect(page.getByText(/something went wrong/i)).toHaveCount(0);
   });
 

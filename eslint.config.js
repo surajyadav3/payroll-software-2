@@ -25,4 +25,13 @@ export default [
       'react-refresh/only-export-components': 'off',
     },
   },
+  {
+    // The screens ported from the new CrewCore platform render `<motion.div>` and icon
+    // components passed as props (`icon: I` → `<I />`); neither is seen as "used" without
+    // eslint-plugin-react.
+    files: ['src/crew/**/*.{js,jsx}'],
+    rules: {
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]|^motion$', argsIgnorePattern: '^_|^[A-Z]', caughtErrors: 'none' }],
+    },
+  },
 ];

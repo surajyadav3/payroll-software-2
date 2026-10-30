@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase';
 import { calcSalary, calcPfEsic, buildPfStatutoryInfo, calcOtPay, calcTds, HIGH_SALARY_THRESHOLD, fullName } from '@/lib/helpers';
+import { raniwalaSlipDetails } from '@/lib/raniwalaPayroll';
 
 /** Fetch one payroll run (with all its payslips) for a given month/year and country group. */
 export async function fetchPayroll(tenantId, month, year, countryGroup = 'Compliance') {
@@ -130,6 +131,54 @@ export async function processPayroll({ tenantId, month, year, countryGroup, empl
   return { payroll_id: data, withheld };
 }
 
+/**
+ * Process Raniwala's payroll for a month. The figures are already worked out
+ * by calcRaniwalaPay (lib/raniwalaPayroll.js) — the same rows HR saw on Run
+ * Payroll — so this only shapes them for process_payroll_by_country.
+ *
+ * `rows` is `[{ emp, settings, pay }]`. Raniwala has one run per month
+ * (PF/ESIC follow the salary rules, not a per-employee flag), stored under the
+ * 'Compliance' group. Withheld employees are skipped and returned.
+ */
+export async function processRaniwalaPayroll({ tenantId, month, year, rows }) {
+  const withheld = rows.filter((r) => r.emp.is_withheld).map((r) => r.emp);
+  const strip = ({ name, amount, note, remark }) => ({ name, amount, ...(note ? { note } : {}), ...(remark ? { remark } : {}) });
+
+  const payload = rows.filter((r) => !r.emp.is_withheld).map(({ emp, settings, pay }) => ({
+    profile_id:          emp.id,
+    emp_name:            fullName(emp),
+    department:          emp.department  || '',
+    designation:         emp.designation || '',
+    ctc:                 pay.structure.gross,
+    work_days:           pay.paidDays,
+    total_work_days:     pay.monthDays,
+    gross_earnings:      pay.totalEarnings,
+    total_deductions:    pay.totalDeductions,
+    advance_deduction:   pay.advanceDeduction,
+    net_pay:             pay.netPay,
+    breakdown: {
+      earnings:   pay.earnings.map(strip),
+      deductions: pay.deductions.map(strip),
+      raniwala:   raniwalaSlipDetails(pay, { emp, settings }),
+    },
+    // Lines with no row behind them (amounts from HR's salary sheet) change
+    // no advance and no salary addition.
+    advances:            pay.advanceLines.filter((a) => a.id),
+    salary_addition_ids: pay.arrears.filter((a) => a.id).map((a) => a.id),
+  }));
+
+  const { data, error } = await supabase.rpc('process_payroll_by_country', {
+    p_tenant_id:     tenantId,
+    p_month:         month + 1,
+    p_year:          year,
+    p_country_group: 'Compliance',
+    p_data:          payload,
+  });
+
+  if (error) throw error;
+  return { payroll_id: data, withheld };
+}
+
 /** Payroll GL journal rows (department-level debit/credit) for one processed run. */
 export async function fetchPayrollGlEntries(payrollId) {
   const { data, error } = await supabase
@@ -159,6 +208,21 @@ export function buildBankFileRows(payslips, employeesById, narration = 'Salary P
   });
 }
 
+/**
+ * Release a run's payslips to employees, or hold them back again. A Raniwala
+ * run starts held when it is processed (20261013_1); until it is released an
+ * employee cannot read their own payslip.
+ */
+export async function setPayrollReleased(payrollId, released, profileId) {
+  const { data, error } = await supabase
+    .from('payrolls')
+    .update(released ? { released_at: new Date().toISOString(), released_by: profileId } : { released_at: null, released_by: null })
+    .eq('id', payrollId)
+    .select('id, released_at')
+    .single();
+  return { data, error };
+}
+
 /** Delete a payroll run and all its payslips. */
 export async function revertPayroll(payrollId) {
   const { error } = await supabase.rpc('revert_payroll_atomic', { p_payroll_id: payrollId });
@@ -167,14 +231,16 @@ export async function revertPayroll(payrollId) {
 
 /** Fetch payslips for a month (admin view). */
 export async function fetchPayslipsByMonth(tenantId, month, year) {
-  const { data: payroll, error } = await supabase
+  // A month can have two runs (Compliance + Non-Compliance), so this must not
+  // be a single-row fetch: that errored and showed no payslips at all.
+  const { data: payrolls, error } = await supabase
     .from('payrolls')
-    .select('id, payslips(*)')
+    .select('id, released_at, payslips(*)')
     .eq('tenant_id', tenantId)
     .eq('month', month + 1)
-    .eq('year', year)
-    .maybeSingle();
-  return { data: payroll?.payslips || [], error };
+    .eq('year', year);
+  // released_at rides along so the page can say which slips employees cannot see yet.
+  return { data: (payrolls || []).flatMap((p) => (p.payslips || []).map((s) => ({ ...s, released_at: p.released_at }))), error };
 }
 
 /** Fetch a single employee's payslip for a given month. */

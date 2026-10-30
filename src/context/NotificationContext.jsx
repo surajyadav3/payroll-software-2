@@ -1,13 +1,16 @@
 import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { listMyNotifications, countUnread, markRead as svcMarkRead, markAllRead as svcMarkAllRead } from '@/services/notificationService';
+import { supabase } from '@/lib/supabase';
+import { ATTENDANCE_NOTICE_TYPES, emitAttendanceChanged } from '@/lib/attendanceEvents';
 
 const NotificationContext = createContext({});
 
-// Plain polling, not a realtime subscription — this app deliberately runs
-// with realtime throttled to 0 events/sec (src/lib/supabase.js:44) and
-// nothing else in the codebase uses supabase.channel()/postgres_changes, so
-// polling matches the established convention instead of introducing a new one.
+// Polling stays as the fallback; on top of it a realtime feed of this
+// person's own new notifications (app_notifications is in the realtime
+// publication since 20261016_1, same feed the mobile app listens to) reloads
+// the bell at once and tells open attendance screens to reload when an
+// approval / scan changed the day.
 const POLL_MS = 45000;
 
 export function NotificationProvider({ children }) {
@@ -38,6 +41,22 @@ export function NotificationProvider({ children }) {
     const interval = setInterval(load, POLL_MS);
     return () => clearInterval(interval);
   }, [load]);
+
+  useEffect(() => {
+    if (!profile?.id) return undefined;
+    const channel = supabase
+      .channel(`my-notifications-${profile.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'app_notifications', filter: `profile_id=eq.${profile.id}` },
+        (payload) => {
+          load();
+          if (ATTENDANCE_NOTICE_TYPES.includes(payload.new?.type)) emitAttendanceChanged();
+        },
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [profile?.id, load]);
 
   const markRead = useCallback(async (id) => {
     setNotifications((prev) => prev.map((n) => (n.id === id && !n.is_read ? { ...n, is_read: true } : n)));

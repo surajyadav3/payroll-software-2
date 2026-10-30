@@ -84,17 +84,22 @@ serve(async (req) => {
       if (existing && existing.id !== id) {
         const { data: owner } = await adminClient
           .from("profiles")
-          .select("first_name, last_name, essl_employee_code, tenant_id")
+          .select("first_name, last_name, essl_employee_code, tenant_id, role")
           .eq("id", existing.id)
           .maybeSingle();
-        if (owner) {
+        // A profile with no company is a stray self-signup (app "Create
+        // account" with this email) — it belongs to nobody, so free it like a
+        // leftover login instead of calling it "another company".
+        const strayProfile = owner && !owner.tenant_id && owner.role !== "superadmin";
+        if (owner && !strayProfile) {
           const who = owner.tenant_id === targetProfile.tenant_id
             ? `${[owner.first_name, owner.last_name].filter(Boolean).join(" ")}${owner.essl_employee_code ? ` (Emp ${owner.essl_employee_code})` : ""}`
             : "an account in another company";
           return json({ error: `This email is already the login of ${who}. Use a different email.` }, 409);
         }
-        // Leftover auth account with no profile (a half-finished add/import):
-        // nobody can use it and it owns no data — free the email and retry.
+        // Leftover auth account with no profile (a half-finished add/import)
+        // or a company-less stray signup: nobody can use it and it owns no
+        // data — free the email and retry.
         const { error: delErr } = await adminClient.auth.admin.deleteUser(existing.id);
         if (delErr) return json({ error: `This email is held by an unused leftover login and could not be freed: ${delErr.message}` }, 400);
         ({ error: authError } = await setEmail());

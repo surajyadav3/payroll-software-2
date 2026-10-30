@@ -1,0 +1,5 @@
+/* Every Tailwind utility is generated inside .ccw (see crew.css), so none of them can touch the
+   rest of the app — whose own stylesheet has classes with the same names (.hidden, .table…). */
+.ccw {
+  @tailwind utilities;
+}

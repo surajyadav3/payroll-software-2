@@ -1,14 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import Header from '@/components/Header';
 import OutletSelect from '@/components/OutletSelect';
 import StatCard from '@/components/StatCard';
 import { showToast } from '@/components/Toast';
+import BulkApproveBar, { BulkHeadCell, BulkRowCell } from '@/components/BulkApproveBar';
+import LeaveWorkedDaysCard from '@/components/LeaveWorkedDaysCard';
+import { useBulkApproval } from '@/hooks/useBulkApproval';
 import { useAuth } from '@/context/AuthContext';
-import { useOutletView } from '@/context/OutletViewContext';
+import { useRequestOutletScope } from '@/context/OutletViewContext';
 import {
   listAllLeaveRequests, updateLeaveStatus, decideLeaveStage, myLeaveStage,
 } from '@/services/leaveService';
-import { fmt, fullName, getInitials, getAvatarColor, scopedToOutlet, isRaniwalaTenant } from '@/lib/helpers';
+import { fmt, fullName, getInitials, getAvatarColor, scopedToOutlet, isRaniwalaTenant, matchesSearch } from '@/lib/helpers';
+import { requestHalfDayLabel, daysText } from '@/lib/halfDayLeave';
 
 const STATUS_FILTERS = ['Pending', 'Approved', 'Rejected', 'All'];
 
@@ -35,19 +40,23 @@ const STAGES = [
 const STAGE_LABEL = Object.fromEntries(STAGES.map((st) => [st.key, st.label]));
 
 // One line per required stage: who decides (or decided), the decision, and
-// when — so HR/HOD see the full trail, not just the final status.
+// when — so HR/HOD see the full trail, not just the final status. 'Skipped'
+// = HR decided before this stage's approver acted.
 function StageTrail({ req }) {
   return (
     <div style={{ marginTop: 4, display: 'grid', gap: 2 }}>
       {STAGES.map((st) => {
         const value = req[st.status];
         if (!value || value === 'Not Required') return null;
-        const cls = value === 'Approved' ? 'badge-success' : value === 'Rejected' ? 'badge-danger' : 'badge-warning';
+        const cls = value === 'Approved' ? 'badge-success' : value === 'Rejected' ? 'badge-danger'
+          : value === 'Skipped' ? 'badge-secondary' : 'badge-warning';
         const who = req[st.decider] ? fullName(req[st.decider]) : st.assignee && req[st.assignee] ? fullName(req[st.assignee]) : null;
         return (
           <div key={st.key} style={{ fontSize: 10, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
             <span className={`badge ${cls}`} style={{ fontSize: 9, marginRight: 4 }}>{st.label}: {value}</span>
-            {who}{req[st.at] && <span style={{ color: 'var(--text-muted)' }}> · {fmt.date(req[st.at])}</span>}
+            {who}
+            {value === 'Skipped' && <span style={{ color: 'var(--text-muted)' }}> · decided by HR</span>}
+            {req[st.at] && <span style={{ color: 'var(--text-muted)' }}> · {fmt.date(req[st.at])}</span>}
           </div>
         );
       })}
@@ -70,11 +79,12 @@ function ApproveRejectButtons({ onApprove, onReject, disabled }) {
 
 export default function LeavesPage() {
   const { tenant, profile } = useAuth();
-  const { outletProfileIds } = useOutletView();
+  const outletProfileIds = useRequestOutletScope();
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('Pending'); // Pending, Approved, Rejected, All
   const [deptFilter, setDeptFilter] = useState('');
+  const [search, setSearch] = useState('');
   const [acting, setActing] = useState(null); // id of the request currently being approved/rejected
 
   const isManager = profile?.role === 'manager';
@@ -90,7 +100,7 @@ export default function LeavesPage() {
   }, [tenant, profile, outletProfileIds]);
 
   const fetchRequests = async () => {
-    if (!tenant || !profile) return;
+    if (!tenant || !profile || outletProfileIds === undefined) return;
     setLoading(true);
     try {
       if (raniwala && profile.role !== 'admin') {
@@ -149,7 +159,78 @@ export default function LeavesPage() {
   const filteredRequests = requests.filter(r =>
     (filter === 'All' || r.status === filter) && (!deptFilter || r.profile?.department === deptFilter)
     && (stageFilter !== 'mine' || myLeaveStage(r, profile))
+    && matchesSearch(search, fullName(r.profile), r.profile?.employee_id, r.profile?.department, r.profile?.designation)
   );
+  // Same gate as the per-row buttons below.
+  const canDecide = (req) => (isDualApproval(req)
+    ? !!myLeaveStage(req, profile)
+    : req.status === 'Pending' && (!isManager || req.required_approver_role === 'manager'));
+
+  const bulk = useBulkApproval({
+    rows: filteredRequests,
+    loading,
+    canAct: canDecide,
+    noun: 'leave request',
+    onDone: fetchRequests,
+    decide: (req, approve) => {
+      const decision = approve ? 'Approved' : 'Rejected';
+      return isDualApproval(req)
+        ? decideLeaveStage(req.id, myLeaveStage(req, profile), decision, profile.id)
+        : updateLeaveStatus(req.id, decision, profile.id, profile.role);
+    },
+    // HR deciding ahead of the Manager / HOD is allowed but final — say so
+    // before a select-all sweeps those up.
+    confirmNote: (rows) => {
+      const early = rows.filter((r) => isDualApproval(r) && myLeaveStage(r, profile) === 'hr' && r.current_stage !== 'hr').length;
+      return early
+        ? `${early} of these ${early === 1 ? 'is' : 'are'} still waiting on another approver. Your HR decision is final and skips them.`
+        : '';
+    },
+  });
+
+  // Approved / Pending tabs: the list as shown (department filter applied) as
+  // an .xlsx to send to management. Pending adds who it is waiting on.
+  const exportList = () => {
+    const pending = filter === 'Pending';
+    const rows = filteredRequests.map((req) => {
+      const half = requestHalfDayLabel(req);
+      const dual = isDualApproval(req);
+      const approvedBy = dual
+        ? STAGES.filter((st) => req[st.status] === 'Approved' && req[st.decider])
+          .map((st) => `${st.label}: ${fullName(req[st.decider])}${req[st.at] ? ` (${fmt.date(req[st.at])})` : ''}`)
+          .join('; ')
+        : req.approval_level === 'self' ? 'Auto-approved' : req.approver ? fullName(req.approver) : '';
+      const waitingOn = dual
+        ? [STAGE_LABEL[req.current_stage],
+          req.current_stage === 'manager' && req.stage_manager ? fullName(req.stage_manager)
+            : req.current_stage === 'hod' && req.stage_hod ? fullName(req.stage_hod) : null,
+        ].filter(Boolean).join(': ')
+        : req.required_approver_role === 'admin' ? 'HR' : req.required_approver_role || '';
+      return {
+        'Emp Code': req.profile?.employee_id || '',
+        Employee: fullName(req.profile),
+        Department: req.profile?.department || '',
+        Designation: req.profile?.designation || '',
+        'Leave Type': half ? `${req.leave_type} (${half})` : req.leave_type,
+        From: fmt.date(req.start_date),
+        To: fmt.date(req.end_date),
+        Days: half ? 0.5 : diffDays(req.start_date, req.end_date),
+        'Unpaid Days': req.unpaid_days || 0,
+        Reason: req.reason || '',
+        'Applied On': fmt.date(req.created_at),
+        ...(pending
+          ? { 'Waiting On': waitingOn, 'Approved So Far': approvedBy, 'Short Notice': req.short_notice ? 'Yes' : '' }
+          : { 'Approved By': approvedBy }),
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [10, 24, 18, 18, 22, 13, 13, 6, 11, 40, 13, ...(pending ? [24, 40, 12] : [50])].map((wch) => ({ wch }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, `${filter} Leaves`);
+    const dept = deptFilter ? `_${deptFilter.toLowerCase().replace(/[^a-z0-9]+/g, '_')}` : '';
+    XLSX.writeFile(wb, `${filter.toLowerCase()}_leaves${dept}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
   const needsMeCount = raniwala ? requests.filter((r) => myLeaveStage(r, profile)).length : 0;
 
   const pendingCount  = requests.filter(r => r.status === 'Pending').length;
@@ -173,6 +254,9 @@ export default function LeavesPage() {
           </div>
         )}
 
+        {/* Punched during their own approved leave (20261024_6): HR gives the day back or keeps it. */}
+        {profile?.role === 'admin' && tenant?.leave_worked_day_from && <LeaveWorkedDaysCard />}
+
         <div className="card">
           <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
             <h3 style={{ margin: 0 }}>
@@ -185,6 +269,13 @@ export default function LeavesPage() {
             </h3>
             <div className="flex gap-1" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
               <OutletSelect style={{ marginRight: 8 }} />
+              <input
+                className="form-input"
+                style={{ maxWidth: 220, marginRight: 8 }}
+                placeholder="Search employee, EMP code…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
               {departments.length > 0 && (
                 <select
                   className="form-select"
@@ -223,13 +314,26 @@ export default function LeavesPage() {
                   )}
                 </button>
               ))}
+              {(filter === 'Approved' || filter === 'Pending') && (
+                <button
+                  className="btn btn-sm btn-outline"
+                  onClick={exportList}
+                  disabled={loading || filteredRequests.length === 0}
+                  style={{ marginLeft: 8 }}
+                >
+                  <i className="fas fa-file-excel" style={{ marginRight: 6 }} />Export
+                </button>
+              )}
             </div>
           </div>
+
+          <BulkApproveBar bulk={bulk} />
 
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
+                  <BulkHeadCell bulk={bulk} />
                   <th>Employee</th>
                   <th>Leave Type</th>
                   <th>Dates</th>
@@ -247,11 +351,12 @@ export default function LeavesPage() {
                   <tr>
                     <td colSpan="8" style={{ textAlign: 'center', padding: 48, color: 'var(--text-muted)' }}>
                       <i className="fas fa-calendar-check" style={{ fontSize: 28, display: 'block', marginBottom: 10, opacity: 0.5 }} />
-                      No {filter !== 'All' ? filter.toLowerCase() : ''} leave requests found.
+                      No {filter !== 'All' ? filter.toLowerCase() : ''} leave requests found{search.trim() ? ` for "${search.trim()}"` : ''}.
                     </td>
                   </tr>
                 ) : filteredRequests.map(req => {
                   const days = diffDays(req.start_date, req.end_date);
+                  const half = requestHalfDayLabel(req);
                   const dual = isDualApproval(req);
                   const mine = dual ? myLeaveStage(req, profile) : null;
                   // Over-5-day leave applied < 15 days ahead: still approvable, just flagged.
@@ -259,6 +364,7 @@ export default function LeavesPage() {
 
                   return (
                     <tr key={req.id} style={shortNotice ? { background: 'var(--warning-light)' } : undefined}>
+                      <BulkRowCell bulk={bulk} row={req} />
                       <td>
                         <div className="emp-cell">
                           <div className="emp-avatar" style={{ background: `linear-gradient(135deg, ${getAvatarColor(req.profile_id)})` }}>
@@ -274,10 +380,18 @@ export default function LeavesPage() {
                       <td style={{ fontSize: 12.5 }}>
                         {fmt.date(req.start_date)}
                         {req.start_date !== req.end_date && <><br />– {fmt.date(req.end_date)}</>}
+                        {half && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{half}</div>}
                       </td>
                       <td>
-                        <span style={{ fontWeight: 700 }}>{days}</span>
-                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}> day{days !== 1 ? 's' : ''}</span>
+                        <span style={{ fontWeight: 700 }}>{half ? daysText(0.5) : days}</span>
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}> {half ? 'day' : `day${days !== 1 ? 's' : ''}`}</span>
+                        {/* Raniwala Earned Leave beyond the balance: its last days are Loss of Pay (20261011_2). */}
+                        {req.unpaid_days > 0 && (
+                          <div style={{ fontSize: 11, marginTop: 2 }} title="Earned Leave balance did not cover the last days — those are unpaid (Loss of Pay)">
+                            {days - req.unpaid_days > 0 && <span style={{ color: 'var(--success)' }}>{days - req.unpaid_days} paid · </span>}
+                            <span style={{ color: 'var(--danger)', fontWeight: 600 }}>{req.unpaid_days} unpaid</span>
+                          </div>
+                        )}
                         {shortNotice && (
                           <div className="badge badge-warning" style={{ fontSize: 9, marginTop: 4 }} title="Leave over 5 days should be applied at least 15 days in advance">
                             <i className="fas fa-triangle-exclamation" style={{ marginRight: 3 }} />Short notice
@@ -302,16 +416,17 @@ export default function LeavesPage() {
                           <>
                             {mine && (
                               <ApproveRejectButtons
-                                disabled={acting === req.id}
+                                disabled={acting === req.id || bulk.busy}
                                 onApprove={() => handleStageDecision(req.id, mine, 'Approved')}
                                 onReject={() => handleStageDecision(req.id, mine, 'Rejected')}
                               />
                             )}
-                            {!mine && req.status === 'Pending' && req.current_stage && (
+                            {(!mine || (mine === 'hr' && req.current_stage !== 'hr')) && req.status === 'Pending' && req.current_stage && (
                               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
                                 Waiting on {STAGE_LABEL[req.current_stage]}
                                 {req.current_stage === 'manager' && req.stage_manager && <> ({fullName(req.stage_manager)})</>}
                                 {req.current_stage === 'hod' && req.stage_hod && <> ({fullName(req.stage_hod)})</>}
+                                {mine === 'hr' && <> · HR can decide now</>}
                               </div>
                             )}
                           </>
@@ -319,7 +434,7 @@ export default function LeavesPage() {
                           <>
                             {req.status === 'Pending' && (!isManager || req.required_approver_role === 'manager') && (
                               <ApproveRejectButtons
-                                disabled={acting === req.id}
+                                disabled={acting === req.id || bulk.busy}
                                 onApprove={() => handleStatusChange(req.id, 'Approved')}
                                 onReject={() => handleStatusChange(req.id, 'Rejected')}
                               />

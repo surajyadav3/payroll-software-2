@@ -3,10 +3,11 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
-import { detectIdentifierType } from '@/services/otpService';
+import { detectIdentifierType, toOtpIdentifier } from '@/services/otpService';
 import { phoneToPlaceholderEmail, friendlyErrorMessage } from '@/lib/helpers';
 import { fetchTodayHoliday } from '@/services/holidayService';
 import HolidayCelebration from '@/components/HolidayCelebration';
+import Modal from '@/components/Modal';
 import {
   ErrorBanner, SuccessBanner,
   OtpInput, ResendTimer,
@@ -129,9 +130,8 @@ function ForgotPasswordModal({ show, onClose }) {
     // Employees imported without an email sign in with a synthesized
     // placeholder address (see phoneToPlaceholderEmail) that's never shown to
     // them and isn't a real mailbox — sending a reset link there would look
-    // like it worked but could never arrive. OTP login can't stand in either;
-    // it's email-only right now (see otpService.sendOtp). So for a phone
-    // identifier, be upfront that this self-service flow can't reach them.
+    // like it worked but could never arrive. So for a phone identifier, point
+    // them at SMS OTP login (send-sms-otp) and HR instead.
     if (!trimmed.includes('@')) {
       if (!/^\d{10}$/.test(trimmed.replace(/\D/g, ''))) {
         setError('Please enter a valid email address or 10-digit phone number.');
@@ -158,52 +158,46 @@ function ForgotPasswordModal({ show, onClose }) {
   };
 
   return (
-    <div className={`modal ${show ? 'show' : ''}`} style={{ display: show ? 'block' : 'none' }}>
-      <div className="modal-backdrop" onClick={onClose} />
-      <div className="modal-dialog" style={{ maxWidth: 420 }}>
-        <div className="modal-content">
-          <div className="modal-header">
-            <h3>Forgot Password</h3>
-            <button className="btn btn-icon" onClick={onClose}><i className="fas fa-times" /></button>
-          </div>
-          <div className="modal-body">
-            <ErrorBanner message={error} />
-            <SuccessBanner message={success} />
-            {noEmailNotice ? (
-              <div style={{
-                background: 'var(--warning-light)', color: 'var(--warning)',
-                padding: '12px 14px', borderRadius: 'var(--radius-md)', fontSize: 13,
-              }}>
-                <i className="fas fa-info-circle" style={{ marginRight: 6 }} />
-                Accounts that sign in with a phone number don't have an email on file, so we can't send a reset
-                link. Please contact your company admin/HR — they can reset your password for you.
-              </div>
-            ) : (
-              <>
-                <p style={{ marginBottom: 16, color: 'var(--text-muted)' }}>
-                  Enter the email address associated with your account and we'll send you a reset link.
-                  If you signed in with a phone number, contact your company admin instead.
-                </p>
-                <div className="form-group">
-                  <label className="form-label">Email Address</label>
-                  <input className="form-input" type="text" inputMode="email" value={identifier}
-                    onChange={(e) => setIdentifier(e.target.value)} placeholder="you@company.com"
-                    onKeyDown={(e) => e.key === 'Enter' && handleReset(e)} />
-                </div>
-              </>
-            )}
-          </div>
-          <div className="modal-footer">
-            <button className="btn btn-outline" onClick={onClose}>Cancel</button>
-            {!noEmailNotice && (
-              <button className="btn btn-primary" onClick={handleReset} disabled={loading}>
-                {loading ? 'Sending…' : 'Send reset link'}
-              </button>
-            )}
-          </div>
+    <Modal
+      show={show}
+      onClose={onClose}
+      title="Forgot Password"
+      footer={<>
+        <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+        {!noEmailNotice && (
+          <button className="btn btn-primary" onClick={handleReset} disabled={loading}>
+            {loading ? 'Sending…' : 'Send reset link'}
+          </button>
+        )}
+      </>}
+    >
+      <ErrorBanner message={error} />
+      <SuccessBanner message={success} />
+      {noEmailNotice ? (
+        <div style={{
+          background: 'var(--warning-light)', color: 'var(--warning)',
+          padding: '12px 14px', borderRadius: 'var(--radius-md)', fontSize: 13,
+        }}>
+          <i className="fas fa-info-circle" style={{ marginRight: 6 }} />
+          Accounts that sign in with a phone number don't have an email on file, so we can't send a reset
+          link. Use <strong>OTP Login</strong> with your mobile number to get a code by SMS, or contact your
+          company admin/HR — they can reset your password for you.
         </div>
-      </div>
-    </div>
+      ) : (
+        <>
+          <p style={{ marginBottom: 16, color: 'var(--text-muted)' }}>
+            Enter the email address associated with your account and we'll send you a reset link.
+            If you signed in with a phone number, contact your company admin instead.
+          </p>
+          <div className="form-group">
+            <label className="form-label">Email Address</label>
+            <input className="form-input" type="text" inputMode="email" value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)} placeholder="you@company.com"
+              onKeyDown={(e) => e.key === 'Enter' && handleReset(e)} />
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -226,7 +220,7 @@ function OtpLoginForm({ onSuccess }) {
   const handleIdentifierChange = (e) => {
     const val = e.target.value;
     setIdentifier(val);
-    setIdType(detectIdentifierType(val));
+    setIdType(detectIdentifierType(toOtpIdentifier(val)));
     setError('');
   };
 
@@ -238,12 +232,12 @@ function OtpLoginForm({ onSuccess }) {
     if (!idType)             { setError('Please enter a valid email address or 10-digit mobile number.'); return; }
     setSending(true);
     try {
-      const result = await sendOtp(identifier, { shouldCreateUser: false }); // login: profile must already exist
+      const result = await sendOtp(toOtpIdentifier(identifier), { shouldCreateUser: false }); // login: profile must already exist
       setResolvedId(result.identifier);
       setOtp(''); setStep(2);
       setSuccess(result.type==='email'
         ? `OTP sent to ${result.identifier}. Check your inbox.`
-        : `OTP sent to ${result.identifier} via SMS.`);
+        : `OTP sent to +91 ${result.identifier} by SMS.`);
     } catch(err) {
       if (err.message?.includes('not found')||err.message?.includes('User not found'))
         setError('No account found. Please sign up first.');
@@ -286,7 +280,7 @@ function OtpLoginForm({ onSuccess }) {
         <label className="form-label">Email or Mobile Number</label>
         <div style={{position:'relative'}}>
           <input className="form-input" type="text" inputMode={idType==='phone'?'numeric':'email'}
-            placeholder="you@company.com or 9876543210"
+            placeholder="you@company.com or 98765 43210"
             value={identifier} onChange={handleIdentifierChange}
             autoFocus style={{paddingLeft:38,paddingRight:idType?80:12}} />
           <i className={`fas ${idType==='phone'?'fa-mobile-alt':'fa-envelope'}`} style={ICON_STYLE} />
@@ -427,8 +421,6 @@ export default function LoginPage() {
           ? <PasswordLoginForm onSuccess={handleSuccess} onForgotPassword={() => setShowForgotPassword(true)} />
           : <OtpLoginForm     onSuccess={handleSuccess} />}
 
-        <ForgotPasswordModal show={showForgotPassword} onClose={() => setShowForgotPassword(false)} />
-
         <div className="auth-divider">or</div>
         <div className="auth-footer">
           Don&apos;t have an account?{' '}
@@ -442,6 +434,9 @@ export default function LoginPage() {
         </div>
 
       </div>
+
+      {/* Outside .auth-card: its backdrop-filter would pin the fixed panel to the card. */}
+      <ForgotPasswordModal show={showForgotPassword} onClose={() => setShowForgotPassword(false)} />
     </div>
   );
 }

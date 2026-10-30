@@ -71,7 +71,11 @@ function calcShiftHours(tenant) {
 
 export default function MySpecialRequestsPage() {
   const { profile, tenant } = useAuth();
-  const isOvertimeEligible = (profile?.ctc || 0) > 0 && (profile?.ctc || 0) < SALARY_OT_LIMIT;
+  // A salary-private tenant keeps the salary off the profile (employee_salaries),
+  // so overtime follows the employee's own "Apply overtime" tick instead.
+  const isOvertimeEligible = tenant?.salary_private
+    ? !!profile?.overtime_applicable
+    : (profile?.ctc || 0) > 0 && (profile?.ctc || 0) < SALARY_OT_LIMIT;
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
