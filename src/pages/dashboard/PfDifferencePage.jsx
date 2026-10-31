@@ -7,6 +7,7 @@ import { useOutletView } from '@/context/OutletViewContext';
 import { fetchPayslipsByMonth } from '@/services/payrollService';
 import { listSalaryAdditionsNamed, createSalaryAdditions } from '@/services/salaryAdditionsService';
 import { fmt, monthLabel, scopedToOutlet, isRaniwalaTenant } from '@/lib/helpers';
+import ArrearsTab from '@/components/payroll/ArrearsTab';
 import { parseBreakdown, raniwalaPfDifference, raniwalaSplitFor, RANIWALA_SPLIT_MONTHS } from '@/lib/raniwalaPayroll';
 import * as XLSX from 'xlsx';
 
@@ -27,7 +28,41 @@ const ITEM = {
 };
 
 /**
- * Difference (Raniwala): Sept 2026 was paid in two runs, 1–16 on the old PF
+ * Difference (Raniwala): two tabs — Arrears (HR adds an arrear per employee
+ * for a payroll month; see ArrearsTab) and PF Difference.
+ */
+export default function PfDifferencePage() {
+  const { tenant } = useAuth();
+  const [tab, setTab] = useState('arrears');
+
+  if (!isRaniwalaTenant(tenant)) {
+    return (
+      <>
+        <Header title="Difference" />
+        <div className="page-content"><div className="card"><div className="card-body" style={muted}>This page is for Raniwala only.</div></div></div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Header title="Difference" breadcrumb={tab === 'arrears'
+        ? "Arrears paid in a month's payroll — salary sheet and payslip"
+        : `PF taken in ${monthLabel(SOURCE.month, SOURCE.year)} above the new monthly cap`} />
+      <div className="page-content">
+        <div className="tabs">
+          {[['arrears', 'Arrears'], ['pf', `PF Difference (${monthLabel(SOURCE.month, SOURCE.year)})`]].map(([k, l]) => (
+            <button key={k} className={`tab-btn ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{l}</button>
+          ))}
+        </div>
+        {tab === 'arrears' ? <ArrearsTab /> : <PfDifferenceTab />}
+      </div>
+    </>
+  );
+}
+
+/**
+ * PF Difference (Raniwala): Sept 2026 was paid in two runs, 1–16 on the old PF
  * rule and 17–30 on the new, so for some employees the two PF deductions add
  * up to more than the new rule's monthly cap (Rs.3,000 employee, Rs.3,250
  * employer). This page shows both differences per employee, from the Sept
@@ -35,7 +70,7 @@ const ITEM = {
  * October pay item (salary_additions, earning), which October's run pays back.
  * The employer difference is shown only — it is the company's own share.
  */
-export default function PfDifferencePage() {
+function PfDifferenceTab() {
   const { tenant, profile } = useAuth();
   const { outletProfileIds } = useOutletView();
   const [slips, setSlips] = useState([]);
@@ -110,15 +145,6 @@ export default function PfDifferencePage() {
     XLSX.writeFile(wb, `pf_difference_${SOURCE.year}-${String(SOURCE.month + 1).padStart(2, '0')}.xlsx`);
   };
 
-  if (!isRaniwalaTenant(tenant)) {
-    return (
-      <>
-        <Header title="Difference" />
-        <div className="page-content"><div className="card"><div className="card-body" style={muted}>This page is for Raniwala's two-run months only.</div></div></div>
-      </>
-    );
-  }
-
   const partCols = parts?.length || 2;
   const status = (r) => {
     const a = stored[r.slip.profile_id];
@@ -136,8 +162,7 @@ export default function PfDifferencePage() {
 
   return (
     <>
-      <Header title="Difference" breadcrumb={`PF taken in ${monthLabel(SOURCE.month, SOURCE.year)} above the new monthly cap`} />
-      <div className="page-content">
+      <div>
         <div className="stats-row" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
           <StatCard icon="fa-users" iconColor="blue" value={sum(rows, (r) => (r.employee.diff > 0 ? 1 : 0))} label="Employees with a PF difference" />
           <StatCard icon="fa-user" iconColor="orange" value={fmt(sum(rows, (r) => r.employee.diff))} label={`Employee PF difference (returned in ${monthLabel(PAYOUT.month, PAYOUT.year)})`} />

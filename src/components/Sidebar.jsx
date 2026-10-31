@@ -192,7 +192,7 @@ const NAV_CONFIG = {
             { label: 'Advances & Loans', href: '/advances', featureKey: 'advances_loans' },
             { label: 'One-Off Pay Items', href: '/salary-additions', featureKey: 'salary_additions' },
             { label: 'Income Tax Slabs', href: '/tax-slabs', featureKey: 'tax_slabs' },
-            // Sept 2026's PF taken above the new cap, returned in October.
+            // Arrears for a payroll month + Sept 2026's PF taken above the new cap.
             { label: 'Difference', href: '/pf-difference', featureKey: 'run_payroll', raniwalaOnly: true },
           ],
         },

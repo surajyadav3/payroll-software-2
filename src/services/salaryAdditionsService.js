@@ -57,7 +57,7 @@ export async function deleteSalaryAddition(id) {
 export async function listSalaryAdditionsNamed(tenantId, componentName, month, year) {
   const { data, error } = await supabase
     .from('salary_additions')
-    .select('id, profile_id, amount, status')
+    .select('id, profile_id, amount, status, reason, created_at')
     .eq('tenant_id', tenantId)
     .eq('component_name', componentName)
     .eq('effective_month', month)

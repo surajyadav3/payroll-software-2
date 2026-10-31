@@ -230,6 +230,17 @@ export async function revertPayroll(payrollId) {
 }
 
 /** Fetch payslips for a month (admin view). */
+/** Who already has a payslip for a month (0-based `month`) — ids only, for a "processed already" note. */
+export async function fetchPayslipProfileIds(tenantId, month, year) {
+  const { data, error } = await supabase
+    .from('payrolls')
+    .select('payslips(profile_id)')
+    .eq('tenant_id', tenantId)
+    .eq('month', month + 1)
+    .eq('year', year);
+  return { data: new Set((data || []).flatMap((p) => (p.payslips || []).map((s) => s.profile_id))), error };
+}
+
 export async function fetchPayslipsByMonth(tenantId, month, year) {
   // A month can have two runs (Compliance + Non-Compliance), so this must not
   // be a single-row fetch: that errored and showed no payslips at all.
